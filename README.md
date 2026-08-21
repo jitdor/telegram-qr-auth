@@ -78,9 +78,21 @@ the store is injected rather than in-process.
 
 ## Install
 
+Not on npm — install straight from GitHub:
+
 ```bash
-npm install telegram-qr-auth
+npm install github:jitdor/telegram-qr-auth
 ```
+
+Pin a tag for anything you deploy, since the default branch moves:
+
+```bash
+npm install github:jitdor/telegram-qr-auth#v0.1.0
+```
+
+It lands in `node_modules/telegram-qr-auth` and imports by that name either way. Vendoring the
+`src/` directory into your own repo is also a legitimate option: it is nine dependency-free ESM
+files with no build step, and that is partly the point.
 
 ---
 
