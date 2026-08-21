@@ -1,0 +1,35 @@
+{
+  "name": "telegram-qr-idp",
+  "main": "worker.js",
+  "compatibility_date": "2026-07-02",
+
+  // Secrets (wrangler secret put), never here:
+  //   OIDC_SIGNING_KEY        the private JWK — treat it as you would a TLS private key
+  //   TELEGRAM_BOT_TOKEN
+  //   TELEGRAM_WEBHOOK_SECRET
+  //   PAIRWISE_SALT
+  //   PARTNER_CRM_SECRET
+  //
+  // ISSUER must match exactly what relying parties configure, and must have no trailing slash.
+  "vars": {
+    "ISSUER": "https://auth.example.com",
+    "TELEGRAM_BOT_USERNAME": "your_bot",
+    "CHAT_ID": "-1001234567890"
+  },
+
+  "kv_namespaces": [
+    // In-flight QR sign-ins.
+    { "binding": "LOGINS", "id": "<from `wrangler kv namespace create LOGINS`>" },
+    // Authorization requests, codes, refresh tokens, consent grants.
+    //
+    // KV has no compare-and-swap, so code redemption is a read-then-delete. Fine for first-party
+    // use; for third parties, swap this for D1 or a Durable Object — see docs/oidc.md.
+    { "binding": "OIDC", "id": "<from `wrangler kv namespace create OIDC`>" }
+  ],
+
+  "ratelimits": [
+    { "name": "RATE_LIMITER", "namespace_id": "1001", "simple": { "limit": 60, "period": 60 } }
+  ],
+
+  "observability": { "enabled": true }
+}

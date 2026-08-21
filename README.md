@@ -299,6 +299,55 @@ as JSON, or call `auth.beginLogin()` directly.
 
 ---
 
+## Running a public identity provider
+
+Everything above assumes you own every app that verifies a session. If third parties need to sign
+users in, that assumption breaks in a specific way: HMAC verification and HMAC forgery use the same
+key, so a relying party that can check a token can also mint one — for any user, to any of your
+apps.
+
+`telegram-qr-auth/oidc` is the answer to that: a standards-compliant OpenID Connect provider with
+the QR scan as its authentication method. ES256 signing, published JWKS, per-client audiences,
+PKCE, consent, and refresh rotation with reuse detection. Relying parties integrate with a stock
+OIDC library and never learn Telegram is involved.
+
+```js
+import { createOidcProvider, loadSigningKeys, StaticClientRegistry, KvOidcStore } from "telegram-qr-auth/oidc";
+
+const oidc = createOidcProvider({
+  auth,                                        // your createTelegramQrAuth instance
+  issuer: "https://auth.example.com",
+  keys: await loadSigningKeys(env.OIDC_SIGNING_KEY),
+  clients: new StaticClientRegistry([...]),
+  store: new KvOidcStore(env.OIDC),
+});
+
+export default { fetch: (request) => oidc.handle(request) };
+```
+
+Relying parties then point any OIDC library at
+`https://auth.example.com/.well-known/openid-configuration`.
+
+| | Base package | OIDC provider |
+| --- | --- | --- |
+| Signing | HMAC, shared secret | **ES256**, private key held only by the provider |
+| A verifier can forge tokens | **yes** | no |
+| Token scoped to one app | no | `aud` per client |
+| Consent | none | shown, remembered, withdrawable |
+| Revocation | shorten the session | rotation, reuse detection, `/revoke` |
+| Cross-domain browser sign-in | shared parent domain only | any domain |
+
+Authorization code + PKCE only — implicit and hybrid are neither advertised nor implemented.
+
+**[docs/oidc.md](docs/oidc.md)** is the deployment guide, and it is worth reading before you point
+strangers at this: consent deliberately costs one tap, `KvOidcStore` has no compare-and-swap, rate
+limiting is yours to wire up, and running an IdP for other people's users carries obligations that
+no amount of test coverage addresses.
+
+Runnable example: [`examples/oidc-provider/`](examples/oidc-provider/worker.js).
+
+---
+
 ## Using it from other languages
 
 The package is JavaScript, but only **one** component ever runs it: the auth service. Deploy that
@@ -535,7 +584,7 @@ There is nothing to install and nothing to build — clone it and run the tests:
 node --test tests/*.test.mjs
 ```
 
-93 tests, no network, no wrangler, no D1 emulator: the D1 tests run real SQLite (`node:sqlite`)
+150 tests, no network, no wrangler, no D1 emulator: the D1 tests run real SQLite (`node:sqlite`)
 against the real migration file, so the SQL that makes `confirm` single-use is actually exercised.
 
 ---

@@ -38,8 +38,9 @@ revocation list.
 
 | Directory | Language | What it shows | Verified |
 | --- | --- | --- | --- |
-| [`cloudflare-worker/`](cloudflare-worker/worker.js) | JS | The auth service itself — both halves in one Worker | Covered by the package's 93 tests |
+| [`cloudflare-worker/`](cloudflare-worker/worker.js) | JS | The auth service itself — both halves in one Worker | Covered by the package's 150 tests |
 | [`node-server/`](node-server/server.mjs) | JS | The whole flow with no Cloudflare at all | — |
+| [`oidc-provider/`](oidc-provider/worker.js) | JS | A full OpenID Connect provider — see [docs/oidc.md](../docs/oidc.md) | Covered by 57 OIDC tests |
 | [`go/`](go/telegramqrauth.go) | Go | Verifier + middleware + CLI client | **`go test` — 13 subtests pass** |
 | [`python/`](python/telegram_qr_auth.py) | Python | Verifier + client | **`--selftest` — 9 checks pass** |
 | [`php/`](php/index.php) | PHP | Verifier + protected page | Reviewed, not executed (no PHP here) |
@@ -91,9 +92,18 @@ It is off by default deliberately: returning the session value in a response bod
 `HttpOnly` exists to prevent, so it is appropriate only when the client polling is *not* a browser.
 Leave it off for browser sign-ins and let the cookie do its job.
 
-## The secret
+## The secret, and where this model stops working
 
 Every verifier needs the auth service's `session.secret`. Anyone holding it can mint a session for
 any user id, so it is a signing key, not a config value: environment variable or secret manager,
 never the repo, and rotate it by rotating both sides together (every session is invalidated, and
 everyone re-scans once).
+
+Which is exactly why this model has a boundary. HMAC verification and HMAC forgery use the same
+key, so **every app in the table above can also forge sessions for every other one**. Among apps
+you control that is a shrug — you already trust yourself. Hand that secret to a third party and you
+have handed them the ability to impersonate any of your users to any of your apps.
+
+When apps you do not control need to sign users in, use
+[`telegram-qr-auth/oidc`](../docs/oidc.md) instead: ES256 signatures, a published JWKS, and
+per-client audiences, so a relying party can verify and never forge.

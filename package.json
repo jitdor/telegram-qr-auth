@@ -26,7 +26,14 @@
     "sso",
     "cloudflare-workers",
     "d1",
-    "bot"
+    "bot",
+    "oidc",
+    "openid-connect",
+    "identity-provider-oidc",
+    "pkce",
+    "jwt",
+    "jwks",
+    "sso-provider"
   ],
   "main": "./src/index.js",
   "module": "./src/index.js",
@@ -42,7 +49,10 @@
     "./session": "./src/session.js",
     "./bot": "./src/bot.js",
     "./migrations/d1.sql": "./migrations/d1.sql",
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./oidc": "./src/oidc/index.js",
+    "./oidc/clients": "./src/oidc/clients.js",
+    "./oidc/store": "./src/oidc/store.js"
   },
   "files": [
     "src",
