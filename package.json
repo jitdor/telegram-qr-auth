@@ -1,0 +1,62 @@
+{
+  "name": "telegram-qr-auth",
+  "version": "0.1.0",
+  "description": "Telegram as an identity provider: sign in by scanning a QR code, with no phone number, no login code, and no typing at all.",
+  "type": "module",
+  "license": "MIT",
+  "author": "Kenny",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jitdor/telegram-qr-auth.git"
+  },
+  "homepage": "https://github.com/jitdor/telegram-qr-auth#readme",
+  "bugs": {
+    "url": "https://github.com/jitdor/telegram-qr-auth/issues"
+  },
+  "keywords": [
+    "telegram",
+    "auth",
+    "authentication",
+    "qr",
+    "qr-code",
+    "login",
+    "passwordless",
+    "identity-provider",
+    "sso",
+    "cloudflare-workers",
+    "d1",
+    "bot"
+  ],
+  "main": "./src/index.js",
+  "module": "./src/index.js",
+  "types": "./types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./types/index.d.ts",
+      "default": "./src/index.js"
+    },
+    "./gates": "./src/gates.js",
+    "./stores": "./src/stores/index.js",
+    "./qr": "./src/qr.js",
+    "./session": "./src/session.js",
+    "./bot": "./src/bot.js",
+    "./migrations/d1.sql": "./migrations/d1.sql",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src",
+    "types",
+    "migrations",
+    "README.md",
+    "LICENSE"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test tests/*.test.mjs"
+  },
+  "dependencies": {},
+  "devDependencies": {}
+}

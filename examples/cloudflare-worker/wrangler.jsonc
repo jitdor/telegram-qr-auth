@@ -1,0 +1,22 @@
+{
+  "name": "telegram-qr-auth-demo",
+  "main": "worker.js",
+  "compatibility_date": "2026-07-02",
+
+  // TELEGRAM_BOT_TOKEN, TELEGRAM_WEBHOOK_SECRET and SESSION_SECRET are secrets — set them with
+  // `wrangler secret put`, never here. TELEGRAM_BOT_USERNAME is public (it is what the QR points
+  // at) and CHAT_ID is not sensitive either.
+  "vars": {
+    "TELEGRAM_BOT_USERNAME": "your_bot",
+    "CHAT_ID": "-1001234567890"
+  },
+
+  // The only storage this app has: a 10-minute record per in-flight sign-in. No database, no
+  // schema, no migration. Swap for a "d1_databases" binding + migrations/d1.sql if you want a
+  // strictly atomic single-use guarantee.
+  "kv_namespaces": [
+    { "binding": "LOGINS", "id": "<from `wrangler kv namespace create LOGINS`>" }
+  ],
+
+  "observability": { "enabled": true }
+}

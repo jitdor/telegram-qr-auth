@@ -1,0 +1,267 @@
+// The end-to-end sign-in flow, and the ways it is supposed to refuse.
+
+import test from "node:test";
+import assert from "node:assert/strict";
+
+import { createTelegramQrAuth } from "../src/provider.js";
+import { D1LoginStore } from "../src/stores/d1.js";
+import { chatMember, allowlist } from "../src/gates.js";
+import { makeFakeD1, makeFakeTelegram, makeRequest, cookieFrom, ALICE, MALLORY } from "./helpers.mjs";
+
+const CHAT_ID = "-1001234567890";
+
+function setup({ members = [ALICE.id], authorize, ...overrides } = {}) {
+  const db = makeFakeD1();
+  const telegram = makeFakeTelegram({ members });
+  const auth = createTelegramQrAuth({
+    botToken: "123:TEST",
+    botUsername: "example_bot",
+    store: new D1LoginStore(db),
+    namespace: "cockpit",
+    telegram,
+    authorize: authorize ?? chatMember({ chatId: CHAT_ID, onError: () => {} }),
+    ...overrides,
+  });
+  return { auth, telegram, db };
+}
+
+async function pollOnce(auth, token) {
+  return auth.poll(makeRequest(`https://app.example/auth/poll?token=${token}`));
+}
+
+test("scan to session: the whole happy path", async () => {
+  const { auth } = setup();
+
+  const { token, deepLink, svg } = await auth.beginLogin();
+  assert.equal(deepLink, `https://t.me/example_bot?start=cockpit_${token}`);
+  assert.match(svg, /^<svg xmlns="http:\/\/www\.w3\.org\/2000\/svg"/);
+
+  // Before the scan the page just waits.
+  assert.deepEqual(await (await pollOnce(auth, token)).json(), { status: "pending" });
+
+  // The bot receives "/start cockpit_<token>" and confirms it.
+  const started = await auth.handleStart({ text: `/start cockpit_${token}`, from: ALICE });
+  assert.equal(started.matched, true);
+  assert.equal(started.ok, true);
+
+  // The next poll hands back the session cookie.
+  const response = await pollOnce(auth, token);
+  assert.deepEqual(await response.json(), { status: "confirmed" });
+  const cookie = cookieFrom(response, auth.cookieName);
+  assert.ok(cookie, "expected a session cookie");
+  assert.match(response.headers.get("Set-Cookie"), /HttpOnly/);
+  assert.match(response.headers.get("Set-Cookie"), /Secure/);
+  assert.match(response.headers.get("Set-Cookie"), /SameSite=Lax/);
+
+  // And that cookie gets past the guard, carrying the scanner's identity.
+  const guarded = await auth.guard(makeRequest("https://app.example/", { cookie: `${auth.cookieName}=${cookie}` }));
+  assert.equal(guarded.ok, true);
+  assert.equal(guarded.session.id, ALICE.id);
+  assert.equal(guarded.session.name, "Alice Ng");
+});
+
+test("the user types nothing: the deep link carries the whole credential", async () => {
+  const { auth } = setup();
+  const { deepLink, payload, token } = await auth.beginLogin();
+  // Everything the flow needs is in the URL the QR encodes — no field on the page accepts input,
+  // and the only thing the user's phone sends is this exact payload.
+  assert.equal(payload, `cockpit_${token}`);
+  assert.equal(auth.parseStartPayload(deepLink.split("?start=")[1]), token);
+
+  const html = await auth.loginPage();
+  assert.equal(/<input\b/i.test(html), false, "the sign-in page must have no input fields");
+  assert.equal(/<form\b/i.test(html), false, "the sign-in page must have no forms");
+});
+
+test("a token is single-use: the second poll gets nothing", async () => {
+  const { auth } = setup();
+  const { token } = await auth.beginLogin();
+  await auth.handleStart({ text: `/start cockpit_${token}`, from: ALICE });
+
+  assert.equal((await (await pollOnce(auth, token)).json()).status, "confirmed");
+  assert.equal((await (await pollOnce(auth, token)).json()).status, "invalid");
+});
+
+test("a token cannot be confirmed twice", async () => {
+  const { auth } = setup({ members: [ALICE.id, MALLORY.id] });
+  const { token } = await auth.beginLogin();
+
+  assert.equal((await auth.handleStart({ text: `/start cockpit_${token}`, from: ALICE })).ok, true);
+  const second = await auth.handleStart({ text: `/start cockpit_${token}`, from: MALLORY });
+  assert.equal(second.ok, false);
+  assert.equal(second.reason, "unknown_or_used");
+
+  // The session that comes out belongs to whoever scanned first.
+  const response = await pollOnce(auth, token);
+  const cookie = cookieFrom(response, auth.cookieName);
+  const session = await auth.session.verify(cookie);
+  assert.equal(session.id, ALICE.id);
+});
+
+test("an unauthorized scan is refused and does not burn the token", async () => {
+  const { auth } = setup({ members: [ALICE.id] });
+  const { token } = await auth.beginLogin();
+
+  const denied = await auth.handleStart({ text: `/start cockpit_${token}`, from: MALLORY });
+  assert.equal(denied.ok, false);
+  assert.equal(denied.reason, "not_a_member");
+  assert.match(denied.replyText, /not authorized/i);
+
+  // Still pending — the person it was meant for can scan the very same QR.
+  assert.equal((await (await pollOnce(auth, token)).json()).status, "pending");
+  assert.equal((await auth.handleStart({ text: `/start cockpit_${token}`, from: ALICE })).ok, true);
+});
+
+test("expired tokens report expired, then stop existing", async () => {
+  let clock = 1_700_000_000;
+  const { auth } = setup({ now: () => clock, tokenTtlSeconds: 600 });
+  const { token } = await auth.beginLogin();
+
+  clock += 601;
+  assert.equal((await (await pollOnce(auth, token)).json()).status, "expired");
+  assert.equal((await (await pollOnce(auth, token)).json()).status, "invalid");
+});
+
+test("a token that expires before the scan cannot be confirmed", async () => {
+  let clock = 1_700_000_000;
+  const { auth } = setup({ now: () => clock, tokenTtlSeconds: 600 });
+  const { token } = await auth.beginLogin();
+
+  clock += 601;
+  const late = await auth.handleStart({ text: `/start cockpit_${token}`, from: ALICE });
+  assert.equal(late.ok, false);
+  assert.equal(late.reason, "unknown_or_used");
+});
+
+test("garbage tokens never reach the store", async () => {
+  const { auth, db } = setup();
+  let queries = 0;
+  const realPrepare = db.prepare.bind(db);
+  db.prepare = (sql) => {
+    queries++;
+    return realPrepare(sql);
+  };
+
+  for (const bad of ["", "not-hex", "../../etc/passwd", "a".repeat(31), "A".repeat(32), "0".repeat(33)]) {
+    const response = await auth.poll(makeRequest(`https://app.example/auth/poll?token=${encodeURIComponent(bad)}`));
+    assert.equal((await response.json()).status, "invalid");
+  }
+  assert.equal(queries, 0, "malformed tokens must be rejected before any DB access");
+});
+
+test("revocation takes effect on the next request, not at cookie expiry", async () => {
+  const { auth, telegram } = setup();
+  const { token } = await auth.beginLogin();
+  await auth.handleStart({ text: `/start cockpit_${token}`, from: ALICE });
+  const cookie = cookieFrom(await pollOnce(auth, token), auth.cookieName);
+
+  const request = makeRequest("https://app.example/", { cookie: `${auth.cookieName}=${cookie}` });
+  assert.equal((await auth.guard(request)).ok, true);
+
+  telegram.memberIds.delete(ALICE.id); // removed from the group
+
+  const after = await auth.guard(request);
+  assert.equal(after.ok, false);
+  assert.equal(after.reason, "not_a_member");
+  assert.equal(after.response.status, 403);
+  // The now-worthless cookie is torn up rather than left to expire on its own.
+  assert.match(after.response.headers.get("Set-Cookie"), /Max-Age=0/);
+});
+
+test("a confirmed scan is still refused at poll time if authorization lapsed in between", async () => {
+  const { auth, telegram } = setup();
+  const { token } = await auth.beginLogin();
+  await auth.handleStart({ text: `/start cockpit_${token}`, from: ALICE });
+
+  telegram.memberIds.delete(ALICE.id); // removed between the scan and the poll
+
+  const response = await pollOnce(auth, token);
+  assert.deepEqual(await response.json(), { status: "denied", reason: "not_a_member" });
+  assert.equal(response.headers.get("Set-Cookie"), null);
+});
+
+test("one bot, several apps: namespaces do not cross", async () => {
+  const db = makeFakeD1();
+  const telegram = makeFakeTelegram({ members: [ALICE.id] });
+  const common = { botToken: "123:TEST", botUsername: "example_bot", telegram, authorize: allowlist([ALICE.id]) };
+  const cockpit = createTelegramQrAuth({ ...common, namespace: "cockpit", store: new D1LoginStore(db) });
+  const admin = createTelegramQrAuth({ ...common, namespace: "admin", store: new D1LoginStore(db) });
+
+  const { token } = await cockpit.beginLogin();
+
+  // The admin app doesn't recognize the cockpit's payload at all, so its bot handler stays silent.
+  assert.equal(admin.parseStartPayload(`/start cockpit_${token}`), null);
+  assert.deepEqual(await admin.handleStart({ text: `/start cockpit_${token}`, from: ALICE }), { matched: false });
+
+  // And a cockpit token is invisible to the admin app's poll endpoint even by its raw value.
+  assert.equal((await (await pollOnce(admin, token)).json()).status, "invalid");
+
+  assert.equal((await cockpit.handleStart({ text: `/start cockpit_${token}`, from: ALICE })).ok, true);
+  assert.notEqual(cockpit.cookieName, admin.cookieName);
+});
+
+test("the /auth router owns its paths and nothing else", async () => {
+  const { auth } = setup();
+
+  assert.equal(await auth.handle(makeRequest("https://app.example/")), null);
+  assert.equal(await auth.handle(makeRequest("https://app.example/dashboard")), null);
+
+  const login = await auth.handle(makeRequest("https://app.example/auth/login"));
+  assert.equal(login.status, 200);
+  assert.match(login.headers.get("Content-Type"), /text\/html/);
+  assert.match(login.headers.get("Cache-Control"), /no-store/);
+
+  const qr = await auth.handle(makeRequest("https://app.example/auth/qr"));
+  const body = await qr.json();
+  assert.match(body.deepLink, /^https:\/\/t\.me\/example_bot\?start=cockpit_[0-9a-f]{32}$/);
+  assert.equal(body.pollPath, "/auth/poll");
+
+  const logout = await auth.handle(makeRequest("https://app.example/auth/logout"));
+  assert.equal(logout.status, 302);
+  assert.match(logout.headers.get("Set-Cookie"), /Max-Age=0/);
+});
+
+test("guard on a signed-out request serves the sign-in page with a fresh QR", async () => {
+  const { auth } = setup();
+  const first = await auth.guard(makeRequest("https://app.example/"));
+  assert.equal(first.ok, false);
+  assert.equal(first.reason, "unauthenticated");
+  assert.equal(first.response.status, 200);
+
+  const html = await first.response.text();
+  assert.match(html, /<svg/);
+  const [, tokenInPage] = html.match(/var token = "([0-9a-f]{32})"/);
+  assert.equal((await (await pollOnce(auth, tokenInPage)).json()).status, "pending");
+});
+
+test("mint-time client context is captured and handed to the bot", async () => {
+  const { auth } = setup();
+  const request = makeRequest("https://app.example/auth/login", {
+    headers: { "CF-Connecting-IP": "203.0.113.7", "User-Agent": "Mozilla/5.0 (Macintosh) Chrome/120" },
+  });
+  const { token } = await auth.beginLogin({ request });
+
+  const result = await auth.handleStart({ text: `/start cockpit_${token}`, from: ALICE });
+  assert.equal(result.client.ip, "203.0.113.7");
+  assert.equal(result.client.origin, "https://app.example");
+});
+
+test("captureClient: false stores nothing about the browser", async () => {
+  const { auth } = setup({ captureClient: false });
+  const request = makeRequest("https://app.example/auth/login", { headers: { "CF-Connecting-IP": "203.0.113.7" } });
+  const { token } = await auth.beginLogin({ request });
+  const record = await auth.store.get(token, "cockpit");
+  assert.equal(record.client, null);
+});
+
+test("config mistakes fail at construction, not at 3am", () => {
+  const store = new D1LoginStore(makeFakeD1());
+  const base = { botToken: "123:TEST", botUsername: "example_bot", store };
+
+  assert.throws(() => createTelegramQrAuth({ ...base, store: undefined }), /store/);
+  assert.throws(() => createTelegramQrAuth({ ...base, botUsername: undefined }), /botUsername/);
+  assert.throws(() => createTelegramQrAuth({ ...base, botToken: undefined, telegram: undefined }), /botToken/);
+  // "_" is the payload separator, so it cannot appear in a namespace.
+  assert.throws(() => createTelegramQrAuth({ ...base, namespace: "my_app" }), /namespace/);
+  assert.throws(() => createTelegramQrAuth({ ...base, namespace: "" }), /namespace/);
+});
