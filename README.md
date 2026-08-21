@@ -456,8 +456,10 @@ cockpit needed a write path into that database at all.
 
 ## Development
 
+There is nothing to install and nothing to build — clone it and run the tests:
+
 ```bash
-npm test          # node --test tests/*.test.mjs
+node --test tests/*.test.mjs
 ```
 
 85 tests, no network, no wrangler, no D1 emulator: the D1 tests run real SQLite (`node:sqlite`)
