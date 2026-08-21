@@ -57,6 +57,11 @@ const NAMESPACE_RE = /^[A-Za-z0-9-]{1,24}$/; // no "_": it is the payload separa
  *   cookie. Keep it small: it rides on every request, and it is signed, not encrypted.
  * @param {boolean} [config.captureClient=true]  Record IP/user-agent at mint time so the bot can
  *   show the user what they are signing into (see "QR phishing" in the README).
+ * @param {boolean} [config.allowAssertions=false]  Let a client ask `/auth/poll?mode=token` for the
+ *   signed session value in the JSON body instead of as a `Set-Cookie`. Needed by clients that
+ *   have no cookie jar — a desktop app, a CLI, a PHP or C# backend on another domain. Off by
+ *   default because handing the session value to page JavaScript is precisely what `HttpOnly`
+ *   exists to prevent: turn it on only when non-browser clients are the ones polling.
  * @param {Function} [config.now]           Clock override, returns epoch seconds. Tests only.
  */
 export function createTelegramQrAuth(config) {
@@ -77,6 +82,7 @@ export function createTelegramQrAuth(config) {
     renderLoginPage = defaultRenderLoginPage,
     claims,
     captureClient = true,
+    allowAssertions = false,
     now = () => Math.floor(Date.now() / 1000),
   } = config;
 
@@ -220,6 +226,11 @@ export function createTelegramQrAuth(config) {
       return jsonResponse({ status: "pending" });
     }
 
+    const wantsAssertion = url.searchParams.get("mode") === "token";
+    if (wantsAssertion && !allowAssertions) {
+      return jsonResponse({ status: "invalid", error: "assertion mode is not enabled on this deployment" }, 400);
+    }
+
     if (record.status === "confirmed") {
       // Single-use, whatever happens next: a token that has been polled once is spent, so a
       // confirmation cannot be replayed into a second session.
@@ -230,9 +241,16 @@ export function createTelegramQrAuth(config) {
       const gate = normalizeGate(await authorize(record.user, { telegram, request, stage: "poll" }));
       if (!gate.ok) return jsonResponse({ status: "denied", reason: gate.reason });
 
-      const cookieValue = await codec.sign(sessionClaims(record.user));
+      const value = await codec.sign(sessionClaims(record.user));
+
+      // Non-browser clients get the signed value in the body and store it themselves; browsers get
+      // it as an HttpOnly cookie they can never read.
+      if (wantsAssertion) {
+        return jsonResponse({ status: "confirmed", assertion: value, expiresIn: codec.maxAgeSeconds });
+      }
+
       const headers = new Headers();
-      headers.append("Set-Cookie", codec.cookieHeader(cookieValue));
+      headers.append("Set-Cookie", codec.cookieHeader(value));
       return jsonResponse({ status: "confirmed" }, 200, headers);
     }
 
@@ -251,6 +269,17 @@ export function createTelegramQrAuth(config) {
   /** Verified cookie claims, or null. Signature and expiry only — no authorization check. */
   async function getSession(request) {
     return codec.verify(codec.read(request));
+  }
+
+  /**
+   * Verifies a bearer assertion — the same signed value, arriving in an `Authorization: Bearer`
+   * header instead of a cookie. This is what a service written in another language calls the
+   * equivalent of; the format is deliberately simple enough to re-verify anywhere with an HMAC
+   * (see "Using it from other languages" in the README).
+   */
+  async function verifyAssertion(assertion) {
+    const bearer = typeof assertion === "string" ? assertion.replace(/^Bearer\s+/i, "") : null;
+    return codec.verify(bearer);
   }
 
   /**
@@ -326,6 +355,7 @@ export function createTelegramQrAuth(config) {
     handleStart,
     poll,
     getSession,
+    verifyAssertion,
     guard,
     loginPage,
     loginResponse,

@@ -299,6 +299,77 @@ as JSON, or call `auth.beginLogin()` directly.
 
 ---
 
+## Using it from other languages
+
+The package is JavaScript, but only **one** component ever runs it: the auth service. Deploy that
+once as a Worker; every other app — PHP, Go, C#, Python, another Worker — either *verifies* a
+session it issued or *drives* a sign-in over HTTP. Neither needs a port of the package, an SDK, or
+a dependency.
+
+Verifying is two HMAC-SHA-256 calls against a `<payloadB64>.<signature>` string:
+
+```
+key       = HMAC-SHA256(key: keyLabel, message: secret)      -> 32 raw bytes
+signature = HMAC-SHA256(key: key,      message: payloadB64)  -> lowercase hex
+```
+
+It is local: no call back to the auth service, so a verifier keeps working while the service is
+down and only new sign-ins stop. The trade is that a local verifier sees a signature, not a live
+authorization — see [`examples/README.md`](examples/README.md) for how to close that gap.
+
+Working ports, each carrying the same known-answer test vector:
+
+| Language | Verifier | Client | Status |
+| --- | --- | --- | --- |
+| [Go](examples/go/telegramqrauth.go) | yes, plus `net/http` middleware | yes | `go test` — 13 subtests pass |
+| [Python](examples/python/telegram_qr_auth.py) | yes | yes | `--selftest` — 9 checks pass |
+| [PHP](examples/php/telegram_qr_auth.php) | yes | — | reviewed, not executed |
+| [C#](examples/csharp/TelegramQrAuth.cs) | yes, plus ASP.NET middleware | yes | reviewed, not executed |
+| JS / Workers | `auth.guard()` | built in | covered by the package's own tests |
+
+All standard library — `hmac`/`hashlib`, `crypto/hmac`, `hash_hmac`, `HMACSHA256`.
+
+### Getting the session to your app
+
+**Same registrable domain** — use the cookie. Set
+`session: { cookieName: "myapp_session", domain: ".example.com" }` on the service, and your app
+just verifies `$_COOKIE` / `r.Cookie` / `Request.Cookies`.
+
+**Different domains, or a native client** — use a bearer assertion:
+
+```js
+allowAssertions: true      // off by default
+```
+
+The client polls `/auth/poll?token=...&mode=token` and gets
+
+```json
+{ "status": "confirmed", "assertion": "<payloadB64>.<signature>", "expiresIn": 2592000 }
+```
+
+to send onward as `Authorization: Bearer ...`. It is opt-in because returning the session value in
+a body is exactly what `HttpOnly` prevents — appropriate when the poller is a desktop app or a CLI,
+not when it is a browser.
+
+### The known-answer vector
+
+Any port should check itself against this before being trusted:
+
+```
+secret     123456:AAHfake-bot-token
+keyLabel   TelegramQrAuthSessionKey
+claims     {"id":39644372,"name":"Alice Ng","username":"alice","exp":4102444800}
+
+payloadB64 eyJpZCI6Mzk2NDQzNzIsIm5hbWUiOiJBbGljZSBOZyIsInVzZXJuYW1lIjoiYWxpY2UiLCJleHAiOjQxMDI0NDQ4MDB9
+signature  ae95d3dc79afa25ab27971f0ccf030a6e0c952d21b3f14872658f366666b2e95
+```
+
+Two mistakes account for nearly every failed port: swapping the HMAC key and message in the
+derivation step (the **label** is the key, the **secret** is the message), and verifying the
+signature but forgetting to check `exp` — which turns every assertion into a permanent credential.
+
+---
+
 ## Security model
 
 What this package does:
@@ -396,6 +467,7 @@ createTelegramQrAuth({
   redirectTo: "/",           // where the page goes after sign-in
   pollIntervalMs: 2000,
   captureClient: true,       // record origin/IP/UA at mint time for the bot's message
+  allowAssertions: false,    // let non-browser clients get the session in the body, not a cookie
   claims: (user) => ({}),    // extra signed cookie claims — keep small, signed not encrypted
   branding, qr, renderLoginPage, now,
 });
@@ -408,6 +480,7 @@ Returned object:
 | `handle(request)`       | web     | Router for `/auth/*`; `null` if the path isn't its own |
 | `guard(request)`        | web     | `{ok:true, session}` or `{ok:false, reason, response}` |
 | `getSession(request)`   | web     | Verified claims, signature+expiry only, no gate        |
+| `verifyAssertion(value)`| web     | Same, for an `Authorization: Bearer` value             |
 | `beginLogin({request})` | web     | `{ token, deepLink, payload, svg, expiresIn }`         |
 | `loginPage/loginResponse` | web   | Render the sign-in page yourself                       |
 | `logoutResponse()`      | web     | 302 + cleared cookie                                   |
@@ -462,7 +535,7 @@ There is nothing to install and nothing to build — clone it and run the tests:
 node --test tests/*.test.mjs
 ```
 
-85 tests, no network, no wrangler, no D1 emulator: the D1 tests run real SQLite (`node:sqlite`)
+93 tests, no network, no wrangler, no D1 emulator: the D1 tests run real SQLite (`node:sqlite`)
 against the real migration file, so the SQL that makes `confirm` single-use is actually exercised.
 
 ---

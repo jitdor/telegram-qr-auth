@@ -206,6 +206,7 @@ export interface TelegramQrAuthConfig {
   renderLoginPage?: (params: RenderLoginPageParams) => string;
   claims?: (user: AuthUser) => Record<string, unknown>;
   captureClient?: boolean;
+  allowAssertions?: boolean;
   now?: () => number;
 }
 
@@ -261,6 +262,7 @@ export interface TelegramQrAuth {
   >;
   poll(request: Request): Promise<Response>;
   getSession(request: Request): Promise<SessionClaims | null>;
+  verifyAssertion(assertion: string | null): Promise<SessionClaims | null>;
   guard(request: Request, options?: { onDenied?: (session: SessionClaims, reason: string) => Promise<Response | undefined> | Response | undefined }): Promise<GuardResult>;
   loginPage(options?: { error?: string; request?: Request; redirectTo?: string }): Promise<string>;
   loginResponse(options?: { error?: string; status?: number; request?: Request; clearCookie?: boolean; redirectTo?: string }): Promise<Response>;
