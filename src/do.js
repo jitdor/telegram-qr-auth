@@ -1,6 +1,11 @@
 // Cloudflare Durable Object storage — one SQLite-backed object that can hold the login records,
 // the OIDC provider's state, or both.
 //
+// This lives behind its own entry point (`telegram-qr-auth/do`) on purpose: the object class runs
+// both the login store's SQL and the OIDC store's SQL, so importing it pulls in both. Keeping it
+// out of the main and `/stores` entry points means a deployment that does not use Durable Objects,
+// or does not use OIDC, never loads code it does not need.
+//
 // Choose it when you want a hard consistency guarantee without running a database:
 //
 //   - A Durable Object handles one request at a time and every method below is synchronous
@@ -20,7 +25,7 @@
 // Setup, in your Worker:
 //
 //     import { DurableObject } from "cloudflare:workers";
-//     import { defineQrAuthStorage } from "telegram-qr-auth/stores";
+//     import { defineQrAuthStorage } from "telegram-qr-auth/do";
 //     export class QrAuthStorage extends defineQrAuthStorage(DurableObject) {}
 //
 // and in wrangler.jsonc:
@@ -31,8 +36,8 @@
 // If the bot runs in a different Worker, bind the same class there with `script_name` pointing at
 // the Worker that exports it — both halves then reach the same object.
 
-import { D1LoginStore } from "./d1.js";
-import { D1OidcStore } from "../oidc/d1-store.js";
+import { D1LoginStore } from "./stores/d1.js";
+import { D1OidcStore } from "./oidc/d1-store.js";
 
 // The same tables as migrations/d1.sql and migrations/oidc-d1.sql, kept inline because a Worker
 // cannot read files. One statement per entry: the DO SQL API is not asked to split them.
@@ -157,5 +162,28 @@ export class DoLoginStore {
 for (const method of LOGIN_METHODS) {
   DoLoginStore.prototype[method] = function (...args) {
     return storageStub(this.binding, this.name)[`login_${method}`](...args);
+  };
+}
+
+/**
+ * OIDC provider state in the same Durable Object. Every operation is a single call into one object,
+ * so code redemption and refresh rotation are atomic exactly as they are in D1OidcStore (which
+ * supplies the SQL). Also exported from `telegram-qr-auth/oidc` for discoverability.
+ *
+ * @param {DurableObjectNamespace} binding  e.g. `env.QRAUTH_DO`.
+ * @param {object} [options]
+ * @param {string} [options.name="default"]  Object name. Sharing it with DoLoginStore is fine.
+ */
+export class DoOidcStore {
+  constructor(binding, { name = "default" } = {}) {
+    storageStub(binding, name);
+    this.binding = binding;
+    this.name = name;
+  }
+}
+
+for (const method of OIDC_METHODS) {
+  DoOidcStore.prototype[method] = function (...args) {
+    return storageStub(this.binding, this.name)[`oidc_${method}`](...args);
   };
 }

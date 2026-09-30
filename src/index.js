@@ -6,7 +6,7 @@
 export { createTelegramQrAuth, POLL_STATUSES, jsonResponse } from "./provider.js";
 export { createStartHandler, createWebhookHandler } from "./bot.js";
 
-export { KVLoginStore, D1LoginStore, MemoryLoginStore, DoLoginStore, defineQrAuthStorage } from "./stores/index.js";
+export { KVLoginStore, D1LoginStore, MemoryLoginStore } from "./stores/index.js";
 
 export * as gates from "./gates.js";
 export { anyUser, chatMember, chatMemberOfAny, chatMemberOfAll, allowlist, denylist, every, some, parseIdList, splitList } from "./gates.js";

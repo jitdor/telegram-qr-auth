@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { MemoryLoginStore } from "../src/stores/memory.js";
 import { D1LoginStore } from "../src/stores/d1.js";
 import { KVLoginStore } from "../src/stores/kv.js";
-import { DoLoginStore, defineQrAuthStorage } from "../src/stores/do.js";
+import { DoLoginStore, defineQrAuthStorage } from "../src/do.js";
 import { makeFakeD1, makeFakeKV, makeFakeDONamespace, ALICE } from "./helpers.mjs";
 
 const NS = "cockpit";

@@ -260,15 +260,17 @@ new MemoryLoginStore()
 
 ```js
 import { DurableObject } from "cloudflare:workers";
-import { defineQrAuthStorage, DoLoginStore } from "telegram-qr-auth";
+import { defineQrAuthStorage, DoLoginStore } from "telegram-qr-auth/do";
 export class QrAuthStorage extends defineQrAuthStorage(DurableObject) {}
 // wrangler.jsonc: durable_objects.bindings [{ name: "QRAUTH_DO", class_name: "QrAuthStorage" }]
 //                 migrations [{ tag: "v1", new_sqlite_classes: ["QrAuthStorage"] }]
 ```
 
 It is strongly consistent and `confirm` is atomic, like D1, but the object creates its own tables, so
-there is nothing to provision or migrate. For the OIDC provider use `DoOidcStore` from
-`telegram-qr-auth/oidc` — the same object can hold both. If the bot is a separate Worker, bind the
+there is nothing to provision or migrate. It has its own entry point so deployments that don't use
+Durable Objects (or OIDC) never load that code. For the OIDC provider use `DoOidcStore`, from the
+same `telegram-qr-auth/do` entry point (also re-exported by `telegram-qr-auth/oidc`); one object can
+hold both. If the bot is a separate Worker, bind the
 class there with `script_name`, and use the same `name` on both sides.
 
 **The KV trade-off, stated honestly.** KV is eventually consistent, so a confirmation may take an

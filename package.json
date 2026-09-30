@@ -48,6 +48,10 @@
       "types": "./types/stores.d.ts",
       "default": "./src/stores/index.js"
     },
+    "./do": {
+      "types": "./types/do.d.ts",
+      "default": "./src/do.js"
+    },
     "./qr": "./src/qr.js",
     "./session": "./src/session.js",
     "./bot": "./src/bot.js",
