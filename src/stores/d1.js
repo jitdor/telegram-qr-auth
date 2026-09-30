@@ -82,6 +82,22 @@ export class D1LoginStore {
     return res.meta.changes > 0;
   }
 
+  /**
+   * Atomically takes a confirmed record out of the table. One DELETE ... RETURNING, so two
+   * simultaneous polls cannot both get the row: the loser deletes nothing and gets null.
+   */
+  async consume(token, namespace) {
+    const row = await this.db
+      .prepare(
+        `DELETE FROM ${this.table} WHERE token = ?1 AND namespace = ?2 AND status = 'confirmed'
+         RETURNING token, namespace, status, telegram_user_id, telegram_first_name, telegram_last_name,
+                   telegram_username, created_at, expires_at, confirmed_at, client`
+      )
+      .bind(token, namespace)
+      .first();
+    return row ? rowToRecord(row) : null;
+  }
+
   async remove(token, namespace) {
     await this.db.prepare(`DELETE FROM ${this.table} WHERE token = ?1 AND namespace = ?2`).bind(token, namespace).run();
   }

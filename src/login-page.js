@@ -15,25 +15,30 @@
 export const DEFAULT_BRANDING = {
   title: "Sign in",
   heading: "Sign in with Telegram",
-  subtitle: "Scan this QR code with the Telegram app on your phone, or click it to open Telegram on this computer. No phone number, no code to type.",
+  subtitle: "Scan the code with the Telegram app on your phone. No phone number, no code to type.",
   mobileSubtitle: "Telegram opens. Tap Start at the bottom of the chat, then come back to this tab.",
-  qrHintText: "Telegram installed on this computer? Click the code to open it.",
+  orScanText: "or scan from another phone",
+  qrHintText: "Telegram on this computer? Click the code.",
   qrLinkTitle: "Open Telegram to sign in",
-  waitingText: "Waiting for scan…",
-  successText: "Signed in — loading…",
-  expiredText: "This QR code expired.",
+  waitingText: "Waiting for Telegram…",
+  successText: "Signed in. Loading…",
+  expiredText: "This sign-in code expired.",
   deniedText: "Your Telegram account isn't allowed to sign in here.",
-  retryText: "Get a new QR code",
-  mobileLinkText: "Open Telegram to sign in",
-  accent: "#6366f1",
-  gradientFrom: "#38bdf8",
-  gradientTo: "#6366f1",
+  retryText: "Get a new code",
+  mobileLinkText: "Open Telegram",
+  accent: "#2aabee",
+  background: "#0e1a2f",
+  gradientFrom: "#2aabee",
+  gradientTo: "#8b5cf6",
   qrDark: "#0f172a",
   qrLight: "#ffffff",
   logoHtml: "",
   footerHtml: "",
   headHtml: "",
 };
+
+// Telegram's paper plane, drawn inline so the page makes no external requests.
+const PLANE_ICON = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21.4 3.6 2.9 10.8c-1 .4-1 1.8.1 2.1l4.6 1.5 1.8 5.6c.3.9 1.4 1.1 2 .4l2.6-2.7 4.8 3.5c.8.6 1.9.1 2.1-.9l3-15.1c.2-1.1-.8-2-1.9-1.6Zm-3.6 4.1-8.5 7.6-.4 3.4-1.2-4 9.6-6.9c.4-.3.9.2.5.6Z"/></svg>`;
 
 /**
  * @param {object} params
@@ -51,71 +56,111 @@ export const DEFAULT_BRANDING = {
 export function renderLoginPage(params) {
   const branding = { ...DEFAULT_BRANDING, ...(params.branding ?? {}) };
   const { token, deepLink, qrSvg, error, pollPath, pollIntervalMs = 2000, redirectTo = "/" } = params;
-  const appLink = params.appLink ?? appLinkFromDeepLink(deepLink);
-  const errorHtml = error ? `<p class="tqa-error">${escapeHtml(error)}</p>` : "";
+  const appLink = escapeHtml(params.appLink ?? appLinkFromDeepLink(deepLink));
+  const errorHtml = error ? `<p class="tqa-error" role="alert">${escapeHtml(error)}</p>` : "";
 
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="robots" content="noindex, nofollow">
 <title>${escapeHtml(branding.title)}</title>
 ${branding.headHtml}
 <style>
-  :root { color-scheme: light; }
-  * { box-sizing: border-box; }
+  :root {
+    color-scheme: dark;
+    --tqa-accent: ${branding.accent};
+    --tqa-bg: ${branding.background};
+    --tqa-glow-a: ${branding.gradientFrom};
+    --tqa-glow-b: ${branding.gradientTo};
+    --tqa-card: #fbfbfd;
+    --tqa-ink: #111a2c;
+    --tqa-muted: #5e6779;
+    --tqa-rule: #e2e6ed;
+    --tqa-font: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  }
+  *, *::before, *::after { box-sizing: border-box; }
+  html, body { min-height: 100%; }
   body {
-    margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-    background: linear-gradient(160deg, ${branding.gradientFrom} 0%, ${branding.gradientTo} 100%);
-    padding: 24px;
+    margin: 0; min-height: 100vh; min-height: 100dvh; display: grid; place-items: center;
+    padding: max(24px, env(safe-area-inset-top)) 16px max(24px, env(safe-area-inset-bottom));
+    background: var(--tqa-bg); color: var(--tqa-ink);
+    font: 16px/1.5 var(--tqa-font); -webkit-font-smoothing: antialiased;
+  }
+  /* Two soft glows in the brand colours, over a dark ground: colour without a loud gradient. */
+  body::before {
+    content: ""; position: fixed; inset: 0; pointer-events: none;
+    background:
+      radial-gradient(55% 60% at 88% 12%, color-mix(in srgb, var(--tqa-glow-a) 24%, transparent), transparent 70%),
+      radial-gradient(50% 55% at 8% 96%, color-mix(in srgb, var(--tqa-glow-b) 22%, transparent), transparent 70%);
   }
   .tqa-card {
-    background: #fff; border-radius: 16px; padding: 32px 28px; max-width: 360px; width: 100%;
-    text-align: center; box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+    position: relative; width: 100%; max-width: 23rem; background: var(--tqa-card); border-radius: 22px;
+    padding: 28px 24px 22px; box-shadow: 0 30px 60px -24px rgba(0, 0, 0, 0.65), 0 0 0 1px rgba(255, 255, 255, 0.06);
   }
-  .tqa-card h1 { font-size: 20px; margin: 0 0 6px; color: #1e293b; }
-  .tqa-sub { color: #64748b; font-size: 13px; margin: 0 0 20px; line-height: 1.5; }
-  .tqa-error {
-    background: #fee2e2; color: #b91c1c; font-size: 13px; border-radius: 8px;
-    padding: 10px 12px; margin: 0 0 18px;
+  .tqa-head { text-align: center; padding-bottom: 20px; margin-bottom: 20px; border-bottom: 2px dashed var(--tqa-rule); }
+  .tqa-head h1 { margin: 0; font-size: 1.4rem; line-height: 1.2; font-weight: 700; letter-spacing: -0.02em; }
+  .tqa-sub { margin: 8px 0 0; color: var(--tqa-muted); font-size: 0.9rem; text-wrap: balance; }
+  .tqa-error { margin: 0 0 16px; padding: 10px 14px; border-radius: 12px; background: #fdece7; color: #a42a17; font-size: 0.88rem; }
+  .tqa-open, .tqa-retry {
+    display: flex; align-items: center; justify-content: center; gap: 10px; width: 100%;
+    padding: 15px 20px; border: 0; border-radius: 999px; background: var(--tqa-accent); color: #fff;
+    font: 600 1.05rem/1.2 var(--tqa-font); text-decoration: none; cursor: pointer;
+    box-shadow: 0 8px 20px -10px color-mix(in srgb, var(--tqa-accent) 80%, transparent);
   }
-  .tqa-qr { display: flex; justify-content: center; margin: 0 0 14px; }
-  .tqa-qr-link { display: block; border-radius: 8px; cursor: pointer; line-height: 0; }
-  .tqa-qr-link:focus-visible, .tqa-open:focus-visible { outline: 3px solid ${branding.accent}; outline-offset: 3px; }
-  .tqa-qr svg { width: 220px; height: 220px; }
-  .tqa-hint { font-size: 12px; color: #94a3b8; margin: -4px 0 12px; line-height: 1.4; }
-  .tqa-open {
-    display: block; margin: 0 0 18px; padding: 14px 18px; border-radius: 10px; font-size: 16px;
-    font-weight: 600; text-decoration: none; background: ${branding.accent}; color: #fff;
+  .tqa-open svg { width: 20px; height: 20px; fill: currentColor; flex: none; }
+  .tqa-open:active, .tqa-retry:active { transform: scale(0.98); }
+  .tqa-how { margin: 12px 0 0; color: var(--tqa-muted); font-size: 0.85rem; text-align: center; text-wrap: balance; }
+  .tqa-or { align-items: center; gap: 12px; margin: 20px 0 14px; color: var(--tqa-muted); font-size: 0.8rem; }
+  .tqa-or::before, .tqa-or::after { content: ""; flex: 1; height: 1px; background: var(--tqa-rule); }
+  .tqa-qr { display: flex; justify-content: center; }
+  .tqa-qr-link { display: block; line-height: 0; padding: 10px; border-radius: 16px; border: 1px solid var(--tqa-rule); background: #fff; transition: border-color 0.15s; }
+  .tqa-qr-link:hover { border-color: var(--tqa-accent); }
+  .tqa-qr svg { width: 13.5rem; max-width: 100%; height: auto; display: block; }
+  .tqa-hint { margin: 12px 0 0; color: var(--tqa-muted); font-size: 0.82rem; text-align: center; }
+  .tqa-status {
+    display: flex; align-items: center; justify-content: center; gap: 8px; min-height: 1.3rem;
+    margin: 16px 0 0; color: var(--tqa-muted); font-size: 0.85rem; text-align: center;
   }
+  .tqa-status::before {
+    content: ""; flex: none; width: 8px; height: 8px; border-radius: 50%;
+    background: var(--tqa-accent); animation: tqa-pulse 1.6s ease-in-out infinite;
+  }
+  [data-tqa-state="signed-in"] .tqa-status::before { background: #1f9d63; animation: none; }
+  [data-tqa-state="expired"] .tqa-status::before, [data-tqa-state="denied"] .tqa-status::before { background: #d23c26; animation: none; }
+  @keyframes tqa-pulse { 50% { opacity: 0.25; } }
+  .tqa-foot { margin: 16px 0 0; color: var(--tqa-muted); font-size: 0.75rem; text-align: center; }
+  a:focus-visible, button:focus-visible { outline: 3px solid var(--tqa-accent); outline-offset: 3px; }
   [hidden] { display: none !important; }
-  /* Phones and tablets: scanning your own screen is impossible, so lead with the button. */
+  /* Phones and tablets can't scan their own screen: lead with the button, keep the QR for a second device. */
   .tqa-touch-only { display: none; }
   @media (hover: none) and (pointer: coarse) {
     .tqa-touch-only { display: block; }
+    .tqa-open.tqa-touch-only, .tqa-or.tqa-touch-only { display: flex; }
     .tqa-pointer-only { display: none; }
+    .tqa-qr svg { width: 10.5rem; }
   }
-  .tqa-status { font-size: 12px; color: #94a3b8; margin: 0 0 16px; min-height: 16px; }
-  .tqa-retry {
-    border: none; border-radius: 8px; padding: 10px 18px; font-size: 14px; font-weight: 600;
-    background: ${branding.accent}; color: #fff; cursor: pointer;
+  @media (prefers-reduced-motion: reduce) {
+    .tqa-status::before { animation: none; }
+    .tqa-open:active, .tqa-retry:active { transform: none; }
   }
-  .tqa-foot { margin: 16px 0 0; font-size: 11px; color: #cbd5e1; }
 </style>
 </head>
 <body>
   <main class="tqa-card">
-    ${branding.logoHtml}
-    <h1>${escapeHtml(branding.heading)}</h1>
-    <p class="tqa-sub tqa-pointer-only">${escapeHtml(branding.subtitle)}</p>
-    <p class="tqa-sub tqa-touch-only">${escapeHtml(branding.mobileSubtitle)}</p>
+    <header class="tqa-head">
+      ${branding.logoHtml}
+      <h1>${escapeHtml(branding.heading)}</h1>
+      <p class="tqa-sub tqa-pointer-only">${escapeHtml(branding.subtitle)}</p>
+    </header>
     ${errorHtml}
-    <a class="tqa-open tqa-touch-only" id="tqa-open" href="${escapeHtml(appLink)}">${escapeHtml(branding.mobileLinkText)}</a>
-    <div class="tqa-qr" id="tqa-qr"><a class="tqa-qr-link" href="${escapeHtml(appLink)}" title="${escapeHtml(branding.qrLinkTitle)}" aria-label="${escapeHtml(branding.qrLinkTitle)}">${qrSvg}</a></div>
+    <a class="tqa-open tqa-touch-only" id="tqa-open" href="${appLink}">${PLANE_ICON}<span>${escapeHtml(branding.mobileLinkText)}</span></a>
+    <p class="tqa-how tqa-touch-only" id="tqa-how">${escapeHtml(branding.mobileSubtitle)}</p>
+    <p class="tqa-or tqa-touch-only" id="tqa-or">${escapeHtml(branding.orScanText)}</p>
+    <div class="tqa-qr" id="tqa-qr"><a class="tqa-qr-link" href="${appLink}" title="${escapeHtml(branding.qrLinkTitle)}" aria-label="${escapeHtml(branding.qrLinkTitle)}">${qrSvg}</a></div>
     <p class="tqa-hint tqa-pointer-only" id="tqa-hint">${escapeHtml(branding.qrHintText)}</p>
-    <p class="tqa-status" id="tqa-status">${escapeHtml(branding.waitingText)}</p>
+    <p class="tqa-status" id="tqa-status" role="status">${escapeHtml(branding.waitingText)}</p>
     ${branding.footerHtml ? `<p class="tqa-foot">${branding.footerHtml}</p>` : ""}
   </main>
 <script>
@@ -125,6 +170,7 @@ ${pollScript({
   redirectTo,
   pollIntervalMs,
   texts: { success: branding.successText, expired: branding.expiredText, denied: branding.deniedText, retry: branding.retryText },
+  ids: { status: "tqa-status", qr: "tqa-qr", hide: ["tqa-open", "tqa-how", "tqa-or", "tqa-hint"] },
 })}
 </script>
 </body>

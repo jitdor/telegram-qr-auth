@@ -4,6 +4,11 @@ import assert from "node:assert/strict";
 import { anyUser, chatMember, chatMemberOfAny, chatMemberOfAll, allowlist, denylist, every, some, normalize, parseIdList, splitList } from "../src/gates.js";
 import { makeFakeTelegram, ALICE, MALLORY } from "./helpers.mjs";
 
+/** A client whose getChatMember always answers with `result`. */
+function answering(result) {
+  return { async call() { return { ok: true, result }; } };
+}
+
 const CHAT_ID = "-1001234567890";
 const ctx = (telegram) => ({ telegram, stage: "confirm" });
 
@@ -157,4 +162,14 @@ test("parseIdList takes the shapes an env var actually arrives in", () => {
   assert.deepEqual(parseIdList(""), []);
   assert.deepEqual(parseIdList(undefined), []);
   assert.deepEqual(parseIdList("39644372, not-a-number"), [39644372]);
+});
+
+test("chatMember admits a restricted user only while Telegram says they are still in the chat", async () => {
+  const gate = chatMember({ chatId: "-100", onError: () => {} });
+  const check = (result) => gate({ id: ALICE.id }, { telegram: answering(result), stage: "session" });
+
+  assert.equal(await check({ status: "restricted", is_member: true }), true, "a muted member is still a member");
+  assert.deepEqual(await check({ status: "restricted", is_member: false }), { ok: false, reason: "not_a_member" }, "restricted, then left");
+  assert.deepEqual(await check({ status: "restricted" }), { ok: false, reason: "not_a_member" }, "no is_member means no proof");
+  assert.equal(await check({ status: "member" }), true, "is_member only matters for restricted");
 });

@@ -34,7 +34,7 @@ const CONFIDENTIAL_CLIENT = {
   first_party: true, // skips consent, so tests can drive it without the form
 };
 
-async function setup({ clients = [PUBLIC_CLIENT, CONFIDENTIAL_CLIENT], members = [ALICE.id], ...overrides } = {}) {
+async function setup({ clients = [PUBLIC_CLIENT, CONFIDENTIAL_CLIENT], members = [ALICE.id], authOverrides = {}, ...overrides } = {}) {
   const telegram = makeFakeTelegram({ members });
   const auth = createTelegramQrAuth({
     botToken: "123:TEST",
@@ -44,6 +44,7 @@ async function setup({ clients = [PUBLIC_CLIENT, CONFIDENTIAL_CLIENT], members =
     telegram,
     authorize: allowlist(members),
     claims: () => ({ auth_time: Math.floor(Date.now() / 1000) }),
+    ...authOverrides,
   });
 
   const oidc = createOidcProvider({
@@ -485,4 +486,107 @@ test("the consent form is bound to its CSRF token and to the user who was shown 
     })
   );
   assert.equal(anonymous.status, 400);
+});
+
+// ---- re-authentication and CORS -------------------------------------------------------------------
+
+// Two sign-ins inside one second would sign identical cookies; a counter keeps them distinct, as
+// the seconds that pass during a real scan would.
+let signInCount = 0;
+const distinctSessions = { claims: () => ({ auth_time: Math.floor(Date.now() / 1000), n: ++signInCount }) };
+
+async function startFirstParty(oidc, extra, cookie) {
+  const pkce = await createPkcePair();
+  return oidc.handle(
+    makeRequest(
+      authorizeUrl({
+        client_id: "app-b",
+        redirect_uri: "https://app-b.example.com/cb",
+        response_type: "code",
+        scope: "openid",
+        code_challenge: pkce.challenge,
+        code_challenge_method: "S256",
+        ...extra,
+      }),
+      cookie ? { cookie } : {}
+    )
+  );
+}
+
+test("prompt=login asks for a fresh sign-in once, then resumes instead of looping", async () => {
+  const { oidc, auth } = await setup({ authOverrides: distinctSessions });
+  const oldCookie = await signIn(auth);
+
+  const page = await (await startFirstParty(oidc, { prompt: "login" }, oldCookie)).text();
+  const resumeUrl = page.match(/"redirectTo":"([^"]+)"/)[1];
+
+  // Coming back with the session it already had does not count as signing in again.
+  const stale = await oidc.handle(makeRequest(ISSUER + resumeUrl, { cookie: oldCookie }));
+  assert.equal(stale.status, 200, "still the sign-in page");
+  assert.match(await stale.text(), /<svg/);
+
+  const freshCookie = await signIn(auth);
+  const resumed = await oidc.handle(makeRequest(ISSUER + resumeUrl, { cookie: freshCookie }));
+  assert.equal(resumed.status, 302);
+  assert.ok(new URL(resumed.headers.get("Location")).searchParams.get("code"));
+});
+
+test("max_age without auth_time still completes after a sign-in during the flow", async () => {
+  const { oidc, auth } = await setup({ authOverrides: { claims: undefined } });
+  const page = await (await startFirstParty(oidc, { max_age: "60" })).text();
+  const resumeUrl = page.match(/"redirectTo":"([^"]+)"/)[1];
+
+  const cookie = await signIn(auth);
+  const resumed = await oidc.handle(makeRequest(ISSUER + resumeUrl, { cookie }));
+  assert.equal(resumed.status, 302);
+  assert.ok(new URL(resumed.headers.get("Location")).searchParams.get("code"));
+});
+
+test("browser apps on another origin can call the fetch endpoints, and preflights succeed", async () => {
+  const { oidc } = await setup();
+  const origin = { Origin: "https://spa.example" };
+
+  const preflight = await oidc.handle(
+    new Request(`${ISSUER}/token`, {
+      method: "OPTIONS",
+      headers: { ...origin, "Access-Control-Request-Method": "POST", "Access-Control-Request-Headers": "content-type" },
+    })
+  );
+  assert.equal(preflight.status, 204);
+  assert.equal(preflight.headers.get("Access-Control-Allow-Origin"), "*");
+  assert.match(preflight.headers.get("Access-Control-Allow-Methods"), /POST/);
+  assert.match(preflight.headers.get("Access-Control-Allow-Headers"), /Content-Type/);
+  assert.equal(preflight.headers.get("Access-Control-Allow-Credentials"), null, "never credentialed");
+
+  const token = await tokenRequest(oidc, { grant_type: "authorization_code", code: "nope", client_id: "app-a" }, origin);
+  assert.equal(token.headers.get("Access-Control-Allow-Origin"), "*", "errors must be readable too");
+
+  const userinfo = await oidc.handle(makeRequest(`${ISSUER}/userinfo`, { headers: origin }));
+  assert.equal(userinfo.status, 401);
+  assert.equal(userinfo.headers.get("Access-Control-Allow-Origin"), "*");
+  assert.match(userinfo.headers.get("Access-Control-Expose-Headers"), /WWW-Authenticate/);
+
+  for (const path of ["/.well-known/openid-configuration", "/.well-known/jwks.json"]) {
+    const response = await oidc.handle(makeRequest(ISSUER + path, { headers: origin }));
+    assert.equal(response.headers.get("Access-Control-Allow-Origin"), "*", path);
+  }
+
+  const authorize = await startFirstParty(oidc, {});
+  assert.equal(authorize.headers.get("Access-Control-Allow-Origin"), null, "/authorize is a navigation");
+});
+
+test("cors can be narrowed to listed origins, or turned off", async () => {
+  const listed = (await setup({ cors: ["https://spa.example"] })).oidc;
+  const ok = await listed.handle(makeRequest(`${ISSUER}/.well-known/jwks.json`, { headers: { Origin: "https://spa.example" } }));
+  assert.equal(ok.headers.get("Access-Control-Allow-Origin"), "https://spa.example");
+  assert.match(ok.headers.get("Vary"), /Origin/);
+
+  const other = await listed.handle(makeRequest(`${ISSUER}/.well-known/jwks.json`, { headers: { Origin: "https://evil.example" } }));
+  assert.equal(other.headers.get("Access-Control-Allow-Origin"), null);
+  const otherPreflight = await listed.handle(new Request(`${ISSUER}/token`, { method: "OPTIONS", headers: { Origin: "https://evil.example" } }));
+  assert.equal(otherPreflight.status, 403);
+
+  const off = (await setup({ cors: false })).oidc;
+  const offPreflight = await off.handle(new Request(`${ISSUER}/token`, { method: "OPTIONS", headers: { Origin: "https://spa.example" } }));
+  assert.equal(offPreflight.status, 403);
 });

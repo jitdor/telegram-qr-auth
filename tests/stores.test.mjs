@@ -78,6 +78,21 @@ for (const [name, make] of stores) {
     assert.equal(await store.get(token, NS), null);
   });
 
+  test(`${name}: consume takes a confirmed record exactly once`, async () => {
+    const store = make();
+    const token = "c".repeat(32);
+    await store.create({ token, namespace: NS, expiresAt: future() });
+    assert.equal(await store.consume(token, NS), null, "a pending record is not consumable");
+    assert.equal((await store.get(token, NS)).status, "pending", "and is left alone");
+
+    await store.confirm(token, NS, USER);
+    const consumed = await store.consume(token, NS);
+    assert.equal(consumed.status, "confirmed");
+    assert.deepEqual(consumed.user, USER);
+    assert.equal(await store.consume(token, NS), null, "consume is single-use");
+    assert.equal(await store.get(token, NS), null);
+  });
+
   test(`${name}: client context round-trips`, async () => {
     const store = make();
     const token = "1".repeat(32);

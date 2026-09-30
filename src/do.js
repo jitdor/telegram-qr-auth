@@ -60,7 +60,7 @@ export const DO_SCHEMA = [
      PRIMARY KEY (user_id, client_id))`,
 ];
 
-export const LOGIN_METHODS = ["create", "get", "confirm", "remove", "sweep"];
+export const LOGIN_METHODS = ["create", "get", "confirm", "consume", "remove", "sweep"];
 export const OIDC_METHODS = [
   "saveRequest",
   "peekRequest",

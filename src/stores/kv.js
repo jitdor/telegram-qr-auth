@@ -11,11 +11,11 @@
 //   1. Eventual consistency. The bot's write can take a moment to become visible to the polling
 //      Worker. In practice that is an extra poll cycle or two before the page says "signed in" —
 //      the token's 10-minute TTL absorbs it comfortably.
-//   2. `confirm` is a read-then-write, and KV has no compare-and-swap, so two *genuinely
-//      simultaneous* scans of the same QR could both succeed. Note what that actually costs: both
-//      scanners already passed the authorization gate, so the outcome is two sessions for two
-//      people who were each entitled to one — not an unauthorized session. The token is still
-//      consumed on first redemption, so it cannot be replayed later.
+//   2. `confirm` and `consume` are read-then-write, and KV has no compare-and-swap. Two *genuinely
+//      simultaneous* scans of the same QR could both succeed, and two polls landing in the same
+//      instant could both redeem one confirmation, giving two sessions. Every such session belongs
+//      to someone who passed the authorization gate, and the token is gone once either delete
+//      lands, so it cannot be replayed later.
 //
 // If neither of those is acceptable — you want one QR to mean exactly one session, always — use
 // D1LoginStore, or a Durable Object.
@@ -65,6 +65,18 @@ export class KVLoginStore {
     const ttl = Math.max(60, record.expiresAt - nowSeconds() + 60);
     await this.kv.put(this.key(token, namespace), JSON.stringify(record), { expirationTtl: ttl });
     return true;
+  }
+
+  /**
+   * Takes a confirmed record out of KV. Not atomic, for the same reason as `confirm`: two polls
+   * arriving in the same instant could both read it before either delete lands. Use D1 or a
+   * Durable Object if one scan must never yield two sessions.
+   */
+  async consume(token, namespace) {
+    const record = await this.get(token, namespace);
+    if (!record || record.status !== "confirmed") return null;
+    await this.remove(token, namespace);
+    return record;
   }
 
   async remove(token, namespace) {

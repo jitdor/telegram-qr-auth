@@ -47,8 +47,8 @@ function buildAuth(env) {
     // new tokens immediately.
     authorize: chatMember({ chatId: env.CHAT_ID }),
 
-    // Required for `max_age` and `prompt=login`: without auth_time the provider cannot prove a
-    // session is fresh, and re-authenticates instead of assuming.
+    // Puts auth_time in id tokens, and lets `max_age` accept a session that is still fresh. Without
+    // it the provider cannot prove freshness, and re-authenticates instead of assuming.
     claims: () => ({ auth_time: Math.floor(Date.now() / 1000) }),
 
     branding: {

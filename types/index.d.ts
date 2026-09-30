@@ -38,6 +38,12 @@ export interface LoginStore {
   get(token: string, namespace: string): Promise<LoginRecord | null>;
   /** Must return true only if the record was still pending, and must be atomic against itself. */
   confirm(token: string, namespace: string, user: AuthUser): Promise<boolean>;
+  /**
+   * Removes a *confirmed* record and returns it, or returns null if there was none. Must be atomic
+   * against itself, so two concurrent polls cannot both redeem one sign-in. Optional for
+   * compatibility; without it the provider falls back to a non-atomic get + remove.
+   */
+  consume?(token: string, namespace: string): Promise<LoginRecord | null>;
   remove(token: string, namespace: string): Promise<void>;
   /** Optional housekeeping. KV expires records itself and has none. */
   sweep?(): Promise<void> | void;
@@ -48,6 +54,7 @@ export declare class MemoryLoginStore implements LoginStore {
   create(record: { token: string; namespace: string; expiresAt: number; client?: ClientContext | null }): Promise<void>;
   get(token: string, namespace: string): Promise<LoginRecord | null>;
   confirm(token: string, namespace: string, user: AuthUser): Promise<boolean>;
+  consume(token: string, namespace: string): Promise<LoginRecord | null>;
   remove(token: string, namespace: string): Promise<void>;
   sweep(): void;
 }
@@ -57,6 +64,7 @@ export declare class D1LoginStore implements LoginStore {
   create(record: { token: string; namespace: string; expiresAt: number; client?: ClientContext | null }): Promise<void>;
   get(token: string, namespace: string): Promise<LoginRecord | null>;
   confirm(token: string, namespace: string, user: AuthUser): Promise<boolean>;
+  consume(token: string, namespace: string): Promise<LoginRecord | null>;
   remove(token: string, namespace: string): Promise<void>;
   sweep(): Promise<void>;
 }
@@ -66,6 +74,7 @@ export declare class KVLoginStore implements LoginStore {
   create(record: { token: string; namespace: string; expiresAt: number; client?: ClientContext | null }): Promise<void>;
   get(token: string, namespace: string): Promise<LoginRecord | null>;
   confirm(token: string, namespace: string, user: AuthUser): Promise<boolean>;
+  consume(token: string, namespace: string): Promise<LoginRecord | null>;
   remove(token: string, namespace: string): Promise<void>;
 }
 
@@ -151,6 +160,10 @@ export interface Branding {
   mobileLinkText?: string;
   /** Subtitle shown to touch devices instead of `subtitle`. */
   mobileSubtitle?: string;
+  /** Divider between the button and the QR on touch devices. */
+  orScanText?: string;
+  /** Page background behind the card; `gradientFrom`/`gradientTo` tint two soft glows over it. */
+  background?: string;
   /** Hint under the QR on pointer devices. */
   qrHintText?: string;
   /** Tooltip and accessible name of the (always clickable) QR. */

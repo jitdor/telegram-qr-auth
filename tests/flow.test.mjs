@@ -5,8 +5,10 @@ import assert from "node:assert/strict";
 
 import { createTelegramQrAuth, sameSitePath, LOGIN_PAGE_HEADER } from "../src/provider.js";
 import { D1LoginStore } from "../src/stores/d1.js";
+import { MemoryLoginStore } from "../src/stores/memory.js";
+import { DoLoginStore, defineQrAuthStorage } from "../src/do.js";
 import { chatMember, allowlist } from "../src/gates.js";
-import { makeFakeD1, makeFakeTelegram, makeRequest, cookieFrom, ALICE, MALLORY } from "./helpers.mjs";
+import { makeFakeD1, makeFakeDONamespace, makeFakeTelegram, makeRequest, cookieFrom, ALICE, MALLORY } from "./helpers.mjs";
 
 const CHAT_ID = "-1001234567890";
 
@@ -371,4 +373,52 @@ test("logoutResponse can also clear offline copies", async () => {
   const response = auth.logoutResponse({ clearSiteData: true });
   assert.equal(response.headers.get("Clear-Site-Data"), '"cache", "storage"');
   assert.match(response.headers.get("Set-Cookie"), /cockpit_session=;/);
+});
+
+for (const [name, makeStore] of [
+  ["MemoryLoginStore", () => new MemoryLoginStore()],
+  ["D1LoginStore", () => new D1LoginStore(makeFakeD1())],
+  ["DoLoginStore", () => new DoLoginStore(makeFakeDONamespace(defineQrAuthStorage))],
+]) {
+  test(`${name}: concurrent polls of one confirmation yield exactly one session`, async () => {
+    const { auth } = setup({ store: makeStore(), authorize: allowlist([ALICE.id]) });
+    const { token } = await auth.beginLogin();
+    await auth.confirm({ token, user: ALICE });
+
+    const responses = await Promise.all(Array.from({ length: 5 }, () => pollOnce(auth, token)));
+    const bodies = await Promise.all(responses.map((r) => r.json()));
+    const cookies = responses.map((r) => cookieFrom(r, auth.cookieName)).filter(Boolean);
+
+    assert.equal(bodies.filter((b) => b.status === "confirmed").length, 1, JSON.stringify(bodies));
+    assert.equal(cookies.length, 1, "only the winning poll carries a session cookie");
+    assert.ok(bodies.every((b) => b.status === "confirmed" || b.status === "invalid"));
+  });
+}
+
+test("a confirmation nobody collected before the TTL is expired, not a session", async () => {
+  let clock = Math.floor(Date.now() / 1000);
+  const { auth } = setup({ now: () => clock, tokenTtlSeconds: 60 });
+  const { token } = await auth.beginLogin();
+  assert.equal((await auth.confirm({ token, user: ALICE })).ok, true);
+
+  clock += 61;
+  const response = await pollOnce(auth, token);
+  assert.deepEqual(await response.json(), { status: "expired" });
+  assert.equal(cookieFrom(response, auth.cookieName), null);
+  assert.equal(await auth.store.get(token, "cockpit"), null, "and it is gone");
+});
+
+test("a bring-your-own store without consume() still works", async () => {
+  const inner = new MemoryLoginStore();
+  const legacy = {
+    create: (r) => inner.create(r),
+    get: (t, n) => inner.get(t, n),
+    confirm: (t, n, u) => inner.confirm(t, n, u),
+    remove: (t, n) => inner.remove(t, n),
+  };
+  const { auth } = setup({ store: legacy, authorize: allowlist([ALICE.id]) });
+  const { token } = await auth.beginLogin();
+  await auth.confirm({ token, user: ALICE });
+  assert.equal((await (await pollOnce(auth, token)).json()).status, "confirmed");
+  assert.equal((await (await pollOnce(auth, token)).json()).status, "invalid");
 });

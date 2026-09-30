@@ -1,6 +1,6 @@
 {
   "name": "telegram-qr-auth",
-  "version": "0.4.0",
+  "version": "0.6.2",
   "private": true,
   "description": "Telegram as an identity provider: sign in by scanning a QR code, with no phone number, no login code, and no typing at all.",
   "type": "module",
