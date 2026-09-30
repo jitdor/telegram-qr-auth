@@ -87,7 +87,7 @@ npm install github:jitdor/telegram-qr-auth
 Pin a tag for anything you deploy, since the default branch moves:
 
 ```bash
-npm install github:jitdor/telegram-qr-auth#v0.3.0
+npm install github:jitdor/telegram-qr-auth#v0.3.1
 ```
 
 It lands in `node_modules/telegram-qr-auth` and imports by that name either way. Vendoring the
