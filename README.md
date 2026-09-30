@@ -195,13 +195,15 @@ authorize: async (user) => {
 }
 ```
 
-**The gate runs three times**, and `ctx.stage` tells you which:
+**The gate runs at up to four points**, and `ctx.stage` tells you which (`"refresh"` applies only
+if you run the OIDC provider):
 
 | `stage`     | When                                    | Why it matters                                        |
 | ----------- | --------------------------------------- | ----------------------------------------------------- |
 | `"confirm"` | The bot receives the scan               | An unauthorized scan is refused *before* the token is spent |
 | `"poll"`    | The browser redeems the confirmed token | Closes the gap between scan and redemption            |
 | `"session"` | **Every** guarded request               | Access revoked in Telegram is revoked here immediately |
+| `"refresh"` | OIDC provider: a refresh-token grant    | Someone removed from the group cannot keep minting tokens |
 
 That last row is the important one: because the gate re-runs on every request, removing someone
 from the group locks them out on their next page load — not whenever their cookie happens to
