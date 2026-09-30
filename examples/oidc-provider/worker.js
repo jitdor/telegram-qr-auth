@@ -23,9 +23,10 @@
 // example uses D1 rather than KV for the OIDC store.
 
 import { DurableObject } from "cloudflare:workers";
-import { createTelegramQrAuth, KVLoginStore, DoLoginStore, defineQrAuthStorage, chatMember } from "telegram-qr-auth";
+import { createTelegramQrAuth, KVLoginStore, chatMember } from "telegram-qr-auth";
+import { DoLoginStore, DoOidcStore, defineQrAuthStorage } from "telegram-qr-auth/do";
 import { createWebhookHandler } from "telegram-qr-auth/bot";
-import { createOidcProvider, loadSigningKeys, StaticClientRegistry, D1OidcStore, DoOidcStore } from "telegram-qr-auth/oidc";
+import { createOidcProvider, loadSigningKeys, StaticClientRegistry, D1OidcStore } from "telegram-qr-auth/oidc";
 
 // One SQLite-backed Durable Object can hold both the QR sign-in records and the provider state.
 export class QrAuthStorage extends defineQrAuthStorage(DurableObject) {}

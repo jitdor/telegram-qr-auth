@@ -11,8 +11,7 @@ import { generateSigningKey, loadSigningKeys } from "../src/oidc/keys.js";
 import { StaticClientRegistry } from "../src/oidc/clients.js";
 import { MemoryOidcStore, KvOidcStore } from "../src/oidc/store.js";
 import { D1OidcStore } from "../src/oidc/d1-store.js";
-import { DoOidcStore } from "../src/oidc/do-store.js";
-import { defineQrAuthStorage } from "../src/stores/do.js";
+import { DoOidcStore, DoLoginStore, defineQrAuthStorage } from "../src/do.js";
 import { createPkcePair } from "../src/oidc/pkce.js";
 import { renderConsentPage } from "../src/oidc/consent-page.js";
 import { parseCookies } from "../src/session.js";
@@ -204,7 +203,6 @@ test("parseCookies survives malformed percent-encoding elsewhere in the jar", ()
 
 test("DoLoginStore and DoOidcStore can share one object without touching each other's rows", async () => {
   const binding = makeFakeDONamespace(defineQrAuthStorage);
-  const { DoLoginStore } = await import("../src/stores/do.js");
   const login = new DoLoginStore(binding);
   const oidc = new DoOidcStore(binding);
 

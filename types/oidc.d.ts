@@ -1,6 +1,7 @@
 // Types for telegram-qr-auth/oidc.
 
-import type { Gate, AuthUser, TelegramQrAuth, DurableObjectNamespaceLike } from "./index";
+import type { Gate, AuthUser, TelegramQrAuth } from "./index";
+export { DoOidcStore } from "./do";
 
 export type ClientType = "public" | "confidential";
 
@@ -117,9 +118,6 @@ export declare class KvOidcStore extends MemoryOidcStore {
 }
 export declare class D1OidcStore extends MemoryOidcStore {
   constructor(db: unknown);
-}
-export declare class DoOidcStore extends MemoryOidcStore {
-  constructor(binding: DurableObjectNamespaceLike, options?: { name?: string });
 }
 
 // ---- provider ----
