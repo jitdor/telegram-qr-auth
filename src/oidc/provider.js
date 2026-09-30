@@ -25,7 +25,7 @@
 //   2. Authorization codes and refresh tokens are single-use, and reusing one is treated as theft,
 //      not as a retry.
 
-import { randomToken } from "../crypto.js";
+import { randomToken, hmacSha256, toHex } from "../crypto.js";
 import { signJwt, verifyJwt } from "./jwt.js";
 import { toJwks } from "./keys.js";
 import { matchRedirectUri, verifyClientSecret, subjectFor, CONFIDENTIAL_CLIENT } from "./clients.js";
@@ -62,6 +62,11 @@ const DEFAULTS = {
  *                                    /token and /authorize are unauthenticated by definition.
  * @param {Function} [config.onEvent] `(event) => void` audit hook. Every issuance, denial and
  *                                    reuse detection passes through it.
+ * @param {boolean|string[]} [config.cors=true]  CORS on the endpoints a browser app calls with
+ *                                    fetch (discovery, JWKS, token, userinfo, revoke). `true` allows
+ *                                    any origin, which is safe because none of them read cookies;
+ *                                    an array allows only those origins; `false` turns CORS off.
+ *                                    /authorize and /consent are navigations and never get CORS.
  */
 export function createOidcProvider(config) {
   const {
@@ -75,6 +80,7 @@ export function createOidcProvider(config) {
     branding = {},
     rateLimit,
     onEvent = () => {},
+    cors = true,
     now = () => Math.floor(Date.now() / 1000),
   } = config;
 
@@ -135,13 +141,14 @@ export function createOidcProvider(config) {
     const resumeId = url.searchParams.get("request_id");
     let params;
     let requestId;
+    let parked = null;
 
     if (resumeId) {
-      const saved = await store.peekRequest(resumeId);
-      if (!saved) {
+      parked = await store.peekRequest(resumeId);
+      if (!parked) {
         return errorPage("invalid_request", "This sign-in took too long. Start again from the app.");
       }
-      params = saved.params;
+      params = parked.params;
       requestId = resumeId;
     } else {
       params = Object.fromEntries(url.searchParams);
@@ -209,8 +216,14 @@ export function createOidcProvider(config) {
     // ---- Phase 3: authenticate the human ----
 
     let session = await auth.getSession(request);
+    const cookieMark = await sessionMark(request, requestId);
 
-    if (session && (prompt.has("login") || exceedsMaxAge(session, params.max_age, now()))) {
+    // Coming back from the QR with a different session cookie than the one we parked with means
+    // the user signed in during this flow, which is exactly what prompt=login and max_age asked
+    // for. Without this, the resumed request would demand a fresh login again, forever.
+    const signedInDuringFlow = Boolean(session && parked?.sessionMark !== undefined && parked.sessionMark !== cookieMark);
+
+    if (session && !signedInDuringFlow && (prompt.has("login") || exceedsMaxAge(session, params.max_age, now()))) {
       session = null; // re-authentication demanded by the client
     }
 
@@ -218,7 +231,11 @@ export function createOidcProvider(config) {
       if (prompt.has("none")) return fail("login_required", "The user is not signed in.");
 
       // Park the request and send them to the QR. The login page will bring them back here.
-      await store.saveRequest(requestId, { params: { ...params, redirect_uri: redirectUri }, createdAt: now() }, options.requestTtlSeconds);
+      await store.saveRequest(
+        requestId,
+        { params: { ...params, redirect_uri: redirectUri }, sessionMark: cookieMark, createdAt: now() },
+        options.requestTtlSeconds
+      );
       return auth.loginResponse({
         request,
         redirectTo: `${paths.authorize}?request_id=${encodeURIComponent(requestId)}`,
@@ -282,6 +299,15 @@ export function createOidcProvider(config) {
 
     if (resumeId) await store.takeRequest(resumeId); // done with the parked request
     return issueCode({ client, redirectUri, scopes, session, params });
+  }
+
+  /**
+   * A fingerprint of the session cookie as it is right now ("" when there is none), keyed by the
+   * request id so it means nothing outside this one parked request.
+   */
+  async function sessionMark(request, requestId) {
+    const value = auth.session.read(request) ?? "";
+    return toHex(await hmacSha256(new TextEncoder().encode(`oidc-resume:${requestId}`), value));
   }
 
   /** POST from the consent form. */
@@ -686,6 +712,52 @@ export function createOidcProvider(config) {
   async function handle(request) {
     const url = new URL(request.url);
 
+    if (CORS_PATHS.has(url.pathname)) {
+      const origin = request.headers.get("Origin");
+      const allowOrigin = corsOrigin(origin);
+      if (request.method === "OPTIONS") return preflight(allowOrigin, url.pathname);
+      const response = await route(request, url);
+      return allowOrigin ? withCors(response, allowOrigin) : response;
+    }
+    return route(request, url);
+  }
+
+  // Endpoints a browser app calls with fetch(). Their responses carry no cookies and read none, so
+  // any origin may call them: a public client's security rests on PKCE, not on who is calling.
+  const CORS_PATHS = new Set([paths.discovery, paths.jwks, paths.token, paths.userinfo, paths.revoke]);
+
+  function corsOrigin(origin) {
+    if (!cors || !origin) return null;
+    if (cors === true) return "*";
+    return Array.isArray(cors) && cors.includes(origin) ? origin : null;
+  }
+
+  function preflight(allowOrigin, pathname) {
+    if (!allowOrigin) return new Response(null, { status: 403, headers: { "Cache-Control": "no-store" } });
+    const methods = pathname === paths.token || pathname === paths.revoke ? "POST, OPTIONS" : "GET, OPTIONS";
+    return withCors(
+      new Response(null, {
+        status: 204,
+        headers: {
+          "Access-Control-Allow-Methods": methods,
+          "Access-Control-Allow-Headers": "Authorization, Content-Type",
+          "Access-Control-Max-Age": "86400",
+        },
+      }),
+      allowOrigin
+    );
+  }
+
+  function withCors(response, allowOrigin) {
+    const headers = new Headers(response.headers);
+    headers.set("Access-Control-Allow-Origin", allowOrigin);
+    // Let the app read the 401 challenge from /userinfo.
+    headers.set("Access-Control-Expose-Headers", "WWW-Authenticate");
+    if (allowOrigin !== "*") headers.append("Vary", "Origin");
+    return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
+  }
+
+  async function route(request, url) {
     switch (url.pathname) {
       case paths.discovery:
         return json(metadata(), 200, { "Cache-Control": "public, max-age=3600" });

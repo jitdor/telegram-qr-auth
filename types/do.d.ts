@@ -15,6 +15,7 @@ export declare class DoLoginStore implements LoginStore {
   create(record: { token: string; namespace: string; expiresAt: number; client?: ClientContext | null }): Promise<void>;
   get(token: string, namespace: string): Promise<LoginRecord | null>;
   confirm(token: string, namespace: string, user: AuthUser): Promise<boolean>;
+  consume(token: string, namespace: string): Promise<LoginRecord | null>;
   remove(token: string, namespace: string): Promise<void>;
   sweep(): Promise<void>;
 }

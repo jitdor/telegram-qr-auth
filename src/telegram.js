@@ -45,7 +45,10 @@ export function displayName(user) {
   return name || user.username || `User ${user.id}`;
 }
 
-/** Statuses that count as "in the chat". `left` and `kicked` are the ones that don't. */
+/**
+ * Statuses that count as "in the chat". `left` and `kicked` are the ones that don't, and a
+ * `restricted` member counts only while Telegram also reports `is_member: true`.
+ */
 export const MEMBER_STATUSES = new Set(["creator", "administrator", "member", "restricted"]);
 
 /**
@@ -60,7 +63,12 @@ export async function isChatMember(telegram, chatId, userId, { statuses = MEMBER
     const res = telegram.getChatMember
       ? await telegram.getChatMember(chatId, userId)
       : await telegram.call("getChatMember", { chat_id: chatId, user_id: userId });
-    return statuses.has(res?.result?.status);
+    const member = res?.result;
+    if (!statuses.has(member?.status)) return false;
+    // "restricted" covers both a muted member and someone who was restricted and then *left*:
+    // Telegram keeps the restriction on file after they go. Only `is_member` tells them apart.
+    if (member.status === "restricted" && member.is_member !== true) return false;
+    return true;
   } catch (err) {
     onError?.(err);
     return false;

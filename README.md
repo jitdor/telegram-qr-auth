@@ -196,7 +196,8 @@ None of these need a database — they either ask Telegram or read a string.
 ```js
 import { chatMember, chatMemberOfAny, chatMemberOfAll, allowlist, denylist, every, some, anyUser } from "telegram-qr-auth";
 
-chatMember({ chatId: "-1001234567890" })              // the group IS the access list
+chatMember({ chatId: "-1001234567890" })              // the group IS the access list (a muted
+                                                      // user counts only while still in it)
 chatMember({ chatId, statuses: new Set(["creator", "administrator"]) })   // admins only
 chatMemberOfAny("-100111,-100222")                    // in ANY of these groups
 chatMemberOfAll("-100111,-100222")                    // in EVERY one of them
@@ -289,12 +290,13 @@ class there with `script_name`, and use the same `name` on both sides.
 
 **The KV trade-off, stated honestly.** KV is eventually consistent, so a confirmation may take an
 extra poll cycle to become visible — invisible against a 2-second poll and a 10-minute TTL. And its
-`confirm` is a read-then-write with no compare-and-swap available, so two *genuinely simultaneous*
-scans of the same QR could both succeed. Note what that costs: both scanners already passed the
-authorization gate, so the outcome is two sessions for two people each entitled to one — not an
-unauthorized session, and the token is still consumed on first redemption so it can't be replayed
-later. If you want one QR to mean exactly one session always, use `D1LoginStore` (its `confirm` is
-a single conditional `UPDATE`, atomic by construction) or `DoLoginStore`.
+`confirm` and `consume` are read-then-write with no compare-and-swap available, so two *genuinely
+simultaneous* scans of the same QR could both succeed, and two polls landing in the same instant
+could both redeem one confirmation. Note what that costs: every resulting session belongs to
+someone who passed the authorization gate, not to an unauthorized user, and the token is gone once
+either delete lands, so it can't be replayed later. If you want one QR to mean exactly one session
+always, use `D1LoginStore` (a conditional `UPDATE` to confirm, a `DELETE … RETURNING` to redeem,
+both atomic by construction) or `DoLoginStore`.
 
 D1 needs its table created once:
 
@@ -304,18 +306,23 @@ wrangler d1 execute my-db --remote --file=node_modules/telegram-qr-auth/migratio
 
 ### Writing a store
 
-Four methods, ~40 lines. Redis, Postgres, a Durable Object, Deno KV — all fine:
+Five methods, ~50 lines. Redis, Postgres, a Durable Object, Deno KV — all fine:
 
 ```js
 class MyStore {
   async create({ token, namespace, expiresAt, client }) {}
   async get(token, namespace) {}                    // -> record | null
   async confirm(token, namespace, user) {}          // -> true only if it was still pending
+  async consume(token, namespace) {}                // -> the record, removed, only if confirmed
   async remove(token, namespace) {}
 }
 ```
 
-`tests/stores.test.mjs` runs one contract suite across all three bundled stores — point it at yours
+`confirm` and `consume` must each be atomic: `confirm` so two scans can't both succeed, `consume`
+so two polls can't both turn one confirmation into a session. A store without `consume` still
+works, through a non-atomic `get` + `remove`, but loses that second guarantee.
+
+`tests/stores.test.mjs` runs one contract suite across all the bundled stores — point it at yours
 to check it behaves.
 
 ---
@@ -445,7 +452,9 @@ export default { fetch: (request) => oidc.handle(request) };
 ```
 
 Relying parties then point any OIDC library at
-`https://auth.example.com/.well-known/openid-configuration`.
+`https://auth.example.com/.well-known/openid-configuration`. Browser apps on other origins can call
+discovery, JWKS, `/token`, `/userinfo` and `/revoke` directly: those answer CORS preflights and
+allow any origin by default (`cors: true`), or only the origins you list (`cors: [...]`).
 
 | | Base package | OIDC provider |
 | --- | --- | --- |

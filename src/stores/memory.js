@@ -40,6 +40,16 @@ export class MemoryLoginStore {
     return true;
   }
 
+  /** Atomically takes a confirmed record out of the store; null if it wasn't there or confirmed. */
+  async consume(token, namespace) {
+    const key = this.key(token, namespace);
+    const record = this.records.get(key);
+    // Same as confirm: nothing yields between the check and the delete.
+    if (!record || record.status !== "confirmed") return null;
+    this.records.delete(key);
+    return record;
+  }
+
   async remove(token, namespace) {
     this.records.delete(this.key(token, namespace));
   }

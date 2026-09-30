@@ -140,6 +140,8 @@ export interface OidcProviderConfig {
   branding?: Record<string, string>;
   rateLimit?: (key: string, ctx: { request: Request }) => Promise<boolean> | boolean;
   onEvent?: (event: OidcEvent) => void;
+  /** CORS for discovery, JWKS, token, userinfo and revoke. true = any origin (default), a list = only those, false = none. */
+  cors?: boolean | string[];
   now?: () => number;
   accessTokenTtlSeconds?: number;
   idTokenTtlSeconds?: number;

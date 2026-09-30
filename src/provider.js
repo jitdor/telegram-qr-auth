@@ -258,16 +258,21 @@ export function createTelegramQrAuth(config) {
     }
 
     if (record.status === "confirmed") {
-      // Single-use, whatever happens next: a token that has been polled once is spent, so a
-      // confirmation cannot be replayed into a second session.
-      await store.remove(token, namespace);
+      // Single-use, whatever happens next, and taken atomically: of two polls racing for one
+      // confirmation, exactly one gets the record back and the other sees nothing.
+      const consumed = await consumeRecord(token);
+      if (!consumed) return jsonResponse({ status: "invalid" });
+
+      // The TTL bounds the whole sign-in, not just the scan: a confirmation nobody collected in
+      // time is as dead as a QR nobody scanned.
+      if (consumed.expiresAt <= now()) return jsonResponse({ status: "expired" });
 
       // Re-check authorization even though the bot already did at scan time. It costs one API call
       // and it closes the window between "scanned" and "polled".
-      const gate = normalizeGate(await authorize(record.user, { telegram, request, stage: "poll" }));
+      const gate = normalizeGate(await authorize(consumed.user, { telegram, request, stage: "poll" }));
       if (!gate.ok) return jsonResponse({ status: "denied", reason: gate.reason });
 
-      const value = await codec.sign(sessionClaims(record.user));
+      const value = await codec.sign(sessionClaims(consumed.user));
 
       // Non-browser clients get the signed value in the body and store it themselves; browsers get
       // it as an HttpOnly cookie they can never read.
@@ -281,6 +286,18 @@ export function createTelegramQrAuth(config) {
     }
 
     return jsonResponse({ status: "invalid" });
+  }
+
+  /**
+   * The store's atomic `consume`. A bring-your-own store written before `consume` existed gets a
+   * read-then-delete instead, which keeps the old behaviour, race included.
+   */
+  async function consumeRecord(token) {
+    if (typeof store.consume === "function") return store.consume(token, namespace);
+    const record = await store.get(token, namespace);
+    if (!record || record.status !== "confirmed") return null;
+    await store.remove(token, namespace);
+    return record;
   }
 
   function sessionClaims(user) {

@@ -51,7 +51,7 @@ const auth = createTelegramQrAuth({
   store: new KVLoginStore(env.LOGINS),
   namespace: "idp",
   authorize: chatMember({ chatId: env.CHAT_ID }),
-  // Required for max_age and prompt=login to mean anything.
+  // Puts auth_time in id tokens, and lets max_age accept a session that is still fresh.
   claims: () => ({ auth_time: Math.floor(Date.now() / 1000) }),
 });
 
@@ -111,6 +111,20 @@ https://auth.example.com/.well-known/openid-configuration
 Point any library at that. Authorization code + PKCE is the only flow offered; implicit and hybrid
 are not advertised and not implemented, because both put tokens in a URL fragment and neither has a
 reason to exist any more.
+
+A single-page app on another origin redeems its code with `fetch` from the browser, so the
+endpoints it calls that way (discovery, JWKS, `/token`, `/userinfo`, `/revoke`) send CORS headers
+and answer `OPTIONS` preflights. The `cors` option controls this:
+
+```js
+createOidcProvider({ ..., cors: true });                           // default: any origin
+createOidcProvider({ ..., cors: ["https://app-a.example.com"] });  // only these
+createOidcProvider({ ..., cors: false });                          // none
+```
+
+Any origin is a safe default here: none of these endpoints read or set cookies, responses are never
+credentialed, and a public client's code is useless without its PKCE verifier. `/authorize` and
+`/consent` are page navigations and never send CORS headers.
 
 ## Decisions worth understanding
 
