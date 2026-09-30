@@ -225,7 +225,7 @@ test("a signed-out user gets the QR page, and the flow resumes afterwards", asyn
   // The QR sign-in page, carrying a resume link back into /authorize.
   const page = await response.text();
   assert.match(page, /<svg/);
-  const resumeUrl = page.match(/var redirectTo = "([^"]+)"/)[1];
+  const resumeUrl = page.match(/"redirectTo":"([^"]+)"/)[1];
   assert.match(resumeUrl, /^\/authorize\?request_id=[0-9a-f]{32}$/);
 
   // Scan, then follow the resume link — the original parameters are still in force.

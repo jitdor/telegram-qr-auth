@@ -162,6 +162,20 @@ if (signIn.matched) {
 `handleStart` returns `{ matched: false }` for anything that isn't a sign-in link for **this**
 namespace, so one bot can front several apps without them colliding.
 
+`createWebhookHandler` always answers `200 ok`, even when handling an update throws (a Telegram
+outage while sending the reply, say). The sign-in is confirmed before the reply is sent, and
+Telegram holds every later update behind one it is retrying, so a single failed reply would
+otherwise block every sign-in after it. Errors go to `onError(err, update)`, which defaults to
+`console.error`. If a webhook is already stuck (`getWebhookInfo` shows a growing
+`pending_update_count`), clear the queue by setting the webhook again with
+`drop_pending_updates=true`:
+
+```bash
+curl "https://api.telegram.org/bot$TOKEN/setWebhook?url=$URL&secret_token=$SECRET&drop_pending_updates=true"
+```
+
+In your own bot code, do the same: ack the update even when your reply fails.
+
 A complete deployable version of both halves is in
 [`examples/cloudflare-worker/`](examples/cloudflare-worker/worker.js), and a Cloudflare-free
 Node version in [`examples/node-server/`](examples/node-server/server.mjs).
@@ -320,21 +334,83 @@ branding: {
 }
 ```
 
-**The QR is always a link.** Clicking it opens the same `t.me` deep link the code encodes — on a
-computer that launches the installed Telegram client, which is often quicker than fetching a phone.
-It opens in a new tab so the sign-in page stays put and keeps polling. On touch devices, where
-scanning your own screen is impossible, the page leads with an "Open Telegram to sign in" button and
-its own subtitle. Text is customisable via `branding.mobileLinkText`, `mobileSubtitle`, `qrHintText`
-and `qrLinkTitle`. A custom `renderLoginPage` should keep this: wrap the QR in an `<a href={deepLink}
-target="_blank" rel="noopener noreferrer">`.
+**The QR is always a link.** The QR image encodes the `https://t.me/<bot>?start=…` deep link,
+because that is what a phone camera can open. Clicking the QR on a computer, and the "Open Telegram
+to sign in" button that touch devices get instead, both use the app link
+`tg://resolve?domain=<bot>&start=…`. That opens the installed Telegram app directly, without the
+t.me web page, the "Open in Telegram?" prompt and the extra browser tab that the https link leaves
+behind. The sign-in page itself stays put and keeps polling. `tg://` is handled by Telegram on
+Android, iOS/iPadOS, macOS and Windows; without Telegram installed the link does nothing, and the QR
+is still there. If the user has opened the bot before, Telegram shows a **Start** (or **Restart**)
+button rather than sending `/start` by itself, and the default mobile copy says so.
 
-Or replace the page entirely — `renderLoginPage({ token, deepLink, qrSvg, error, pollPath, redirectTo })`
-returns an HTML string. The only contract a replacement must keep is polling `pollPath` and
-understanding the five statuses in `POLL_STATUSES`:
-`pending` · `confirmed` · `expired` · `invalid` · `denied`.
+The page polls straight away when its tab becomes visible again, so coming back from Telegram does
+not mean waiting out a throttled background timer.
 
-Rendering your own UI entirely? `GET /auth/qr` returns `{ token, deepLink, svg, expiresIn, pollPath }`
-as JSON, or call `auth.beginLogin()` directly.
+Text is customisable via `branding.mobileLinkText`, `mobileSubtitle`, `qrHintText` and
+`qrLinkTitle`. A custom `renderLoginPage` should keep this: encode `deepLink` in the QR, and link
+the QR and the button to `appLink`, in the same tab.
+
+Or replace the page entirely:
+`renderLoginPage({ token, deepLink, appLink, qrSvg, error, pollPath, pollIntervalMs, redirectTo })`
+returns an HTML string. The contract a replacement must keep is polling `pollPath` and handling the
+five statuses in `POLL_STATUSES`: `pending` · `confirmed` · `expired` · `invalid` · `denied`. The
+built-in page's polling script is exported, so a custom page only needs to supply markup:
+
+```js
+import { pollScript, escapeHtml } from "telegram-qr-auth";
+
+renderLoginPage: ({ token, appLink, qrSvg, pollPath, pollIntervalMs, redirectTo }) => `
+  <!doctype html>
+  <a id="open" href="${escapeHtml(appLink)}">Open Telegram</a>
+  <div id="qr"><a href="${escapeHtml(appLink)}">${qrSvg}</a></div>
+  <p id="status">Waiting for scan…</p>
+  <script>${pollScript({
+    token, pollPath, pollIntervalMs, redirectTo,
+    texts: { success: "Signed in", expired: "Expired", denied: "Not allowed", retry: "New code" },
+    ids: { status: "status", qr: "qr", hide: ["open"] },
+  })}</script>`,
+```
+
+`ids.status` gets the status text, `ids.qr` is replaced by a "new code" button on expiry, and the
+`ids.hide` elements are hidden once the sign-in is over, since they would open a dead token. The
+script also sets `data-tqa-state` on `<html>` to `waiting`, `signed-in`, `expired` or `denied`, so a
+status indicator can be styled in CSS alone. Escape what you interpolate into the markup yourself,
+as above; `pollScript` already makes its own values safe inside `<script>`.
+
+Rendering your own UI entirely? `GET /auth/qr` returns
+`{ token, deepLink, appLink, svg, expiresIn, pollPath }` as JSON, or call `auth.beginLogin()`
+directly.
+
+### Returning to the page that was asked for
+
+When `guard()` serves the sign-in page, it sends the browser back to the requested path after
+sign-in, so a signed-out link to `/tickets/x.pdf` lands on `/tickets/x.pdf`, not `/`. Pass
+`guard(request, { redirectTo: "/somewhere" })` to choose. Only same-site paths are accepted (a
+single leading `/`, no `//`, no backslashes); anything else, and any non-GET request, falls back to
+the configured `redirectTo`, so the page cannot be used to send people to another site. The same
+check applies to `loginPage({ redirectTo })` and `loginResponse({ redirectTo })`, and is exported
+as `sameSitePath(value)`.
+
+### Service workers
+
+`Cache-Control: no-store` keeps browsers and proxies from caching the sign-in page, but a service
+worker's Cache API ignores it. If your app has an offline service worker, it could save the sign-in
+page as its offline copy of `/`. Every sign-in page response carries `X-Telegram-Qr-Auth: login`
+(exported as `LOGIN_PAGE_HEADER`), so skip those responses:
+
+```js
+// in the service worker
+const response = await fetch(event.request);
+if (response.ok && response.headers.get("X-Telegram-Qr-Auth") !== "login") {
+  await cache.put(event.request, response.clone());
+}
+```
+
+To wipe offline copies when the user signs out, route logout yourself (before calling
+`auth.handle`) and return `auth.logoutResponse({ clearSiteData: true })`. That adds
+`Clear-Site-Data: "cache", "storage"`, which clears the HTTP cache, Cache API, storage and service
+workers for the **whole origin**, not just this app.
 
 ---
 
@@ -475,7 +551,10 @@ What this package does:
   never be confused with another HMAC derived from the same bot token.
 - **Live re-authorization on every request** — the answer to "a signed cookie can't be revoked".
 - **No caching, anywhere.** Sign-in pages and poll responses are `Cache-Control: no-store`; the
-  login page is `noindex`.
+  login page is `noindex` and carries `X-Telegram-Qr-Auth: login` so a service worker can skip it
+  too (see "Service workers").
+- **Same-site redirects only.** The page after sign-in must be a path on this site; see
+  "Returning to the page that was asked for".
 - **Input validated before it reaches storage.** Malformed tokens are rejected by regex, table
   names by allowlist.
 
@@ -566,12 +645,12 @@ Returned object:
 | Member                  | Half    | Purpose                                                |
 | ----------------------- | ------- | ------------------------------------------------------ |
 | `handle(request)`       | web     | Router for `/auth/*`; `null` if the path isn't its own |
-| `guard(request)`        | web     | `{ok:true, session}` or `{ok:false, reason, response}` |
+| `guard(request, {redirectTo, onDenied})` | web | `{ok:true, session}` or `{ok:false, reason, response}` |
 | `getSession(request)`   | web     | Verified claims, signature+expiry only, no gate        |
 | `verifyAssertion(value)`| web     | Same, for an `Authorization: Bearer` value             |
-| `beginLogin({request})` | web     | `{ token, deepLink, payload, svg, expiresIn }`         |
+| `beginLogin({request})` | web     | `{ token, deepLink, appLink, payload, svg, expiresIn }` |
 | `loginPage/loginResponse` | web   | Render the sign-in page yourself                       |
-| `logoutResponse()`      | web     | 302 + cleared cookie                                   |
+| `logoutResponse({clearSiteData})` | web | 302 + cleared cookie (+ `Clear-Site-Data`)     |
 | `poll(request)`         | web     | The poll endpoint, if you route it yourself            |
 | `handleStart({text,from})` | bot  | Parse + confirm + a reply string                       |
 | `confirm({token,user})` | bot     | The raw confirm, for custom bot flows                  |

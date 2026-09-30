@@ -5,6 +5,7 @@ import { createTelegramQrAuth } from "../src/provider.js";
 import { createStartHandler, createWebhookHandler } from "../src/bot.js";
 import { MemoryLoginStore } from "../src/stores/memory.js";
 import { allowlist } from "../src/gates.js";
+import { TelegramClient } from "../src/telegram.js";
 import { makeFakeTelegram, makeRequest, ALICE, MALLORY } from "./helpers.mjs";
 
 function setup(options = {}) {
@@ -158,4 +159,87 @@ test("a bring-your-own client only needs call()", async () => {
 
   assert.equal(await handle(messageUpdate(`/start cockpit_${token}`)), true);
   assert.deepEqual(calls, ["sendMessage", "deleteMessage"]);
+});
+
+test("the default TelegramClient calls fetch with globalThis as this, as Workers requires", async (t) => {
+  const original = globalThis.fetch;
+  t.after(() => {
+    globalThis.fetch = original;
+  });
+  const seen = [];
+  globalThis.fetch = function (url, init) {
+    // Workers throws "Illegal invocation" when fetch runs with any other receiver.
+    if (this !== globalThis && this !== undefined) throw new TypeError("Illegal invocation");
+    seen.push({ url, body: JSON.parse(init.body) });
+    return Promise.resolve(new Response(JSON.stringify({ ok: true, result: { message_id: 7 } })));
+  };
+
+  const client = new TelegramClient("123:TEST");
+  await client.sendMessage(4242, "hi");
+  await client.deleteMessage(4242, 55);
+  assert.deepEqual(
+    seen.map((call) => call.url),
+    ["https://api.telegram.org/bot123:TEST/sendMessage", "https://api.telegram.org/bot123:TEST/deleteMessage"]
+  );
+});
+
+test("a failed reply still acks the webhook, so later sign-ins are not queued behind it", async () => {
+  const { auth, telegram } = setup();
+  telegram.sendMessage = async () => {
+    throw new Error("Telegram API sendMessage failed: 502");
+  };
+  const errors = [];
+  const handle = createWebhookHandler(auth, { onError: (err, update) => errors.push({ err, update }) });
+  const post = (update) => new Request("https://bot.example/webhook", { method: "POST", body: JSON.stringify(update) });
+
+  const first = await auth.beginLogin();
+  const response = await handle(post(messageUpdate(`/start cockpit_${first.token}`)));
+  assert.equal(response.status, 200);
+  assert.equal(await response.text(), "ok");
+  assert.equal((await auth.store.get(first.token, "cockpit")).status, "confirmed", "the confirm happened before the reply");
+  assert.equal(errors.length, 1);
+  assert.match(errors[0].err.message, /502/);
+  assert.equal(errors[0].update.message.message_id, 55);
+
+  // The next update is not stuck behind the failed one.
+  const second = await auth.beginLogin();
+  assert.equal((await handle(post(messageUpdate(`/start cockpit_${second.token}`, ALICE, 56)))).status, 200);
+  assert.equal((await auth.store.get(second.token, "cockpit")).status, "confirmed");
+});
+
+test("an onError that throws, or the default console.error, still acks", async (t) => {
+  const { auth, telegram } = setup();
+  telegram.sendMessage = async () => {
+    throw new Error("down");
+  };
+  const post = (update) => new Request("https://bot.example/webhook", { method: "POST", body: JSON.stringify(update) });
+
+  const throwing = createWebhookHandler(auth, {
+    onError: () => {
+      throw new Error("reporter broke");
+    },
+  });
+  const a = await auth.beginLogin();
+  assert.equal((await throwing(post(messageUpdate(`/start cockpit_${a.token}`)))).status, 200);
+
+  const logged = [];
+  t.mock.method(console, "error", (...args) => logged.push(args));
+  const byDefault = createWebhookHandler(auth);
+  const b = await auth.beginLogin();
+  assert.equal((await byDefault(post(messageUpdate(`/start cockpit_${b.token}`)))).status, 200);
+  assert.equal(logged.length, 1);
+});
+
+test("an onUnhandled that throws is reported and acked too", async () => {
+  const { auth } = setup();
+  const errors = [];
+  const handle = createWebhookHandler(auth, {
+    onUnhandled: () => {
+      throw new Error("app bot broke");
+    },
+    onError: (err) => errors.push(err),
+  });
+  const response = await handle(new Request("https://bot.example/webhook", { method: "POST", body: JSON.stringify(messageUpdate("hello")) }));
+  assert.equal(response.status, 200);
+  assert.equal(errors.length, 1);
 });

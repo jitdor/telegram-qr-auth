@@ -3,7 +3,10 @@
 // instead as long as it exposes `call(method, payload)` — see `telegram` in createTelegramQrAuth.
 
 export class TelegramClient {
-  constructor(token, { apiBase = "https://api.telegram.org", fetchImpl = fetch } = {}) {
+  // The default is a wrapper, not `fetch` itself: stored on the instance and called as
+  // `this.fetchImpl(...)`, a bare `fetch` would run with the client as `this`, which Workers
+  // rejects with "Illegal invocation".
+  constructor(token, { apiBase = "https://api.telegram.org", fetchImpl = (...args) => fetch(...args) } = {}) {
     if (!token) throw new Error("TelegramClient: bot token is required");
     this.endpoint = `${apiBase}/bot${token}`;
     this.fetchImpl = fetchImpl;

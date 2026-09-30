@@ -3,7 +3,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { createTelegramQrAuth } from "../src/provider.js";
+import { createTelegramQrAuth, sameSitePath, LOGIN_PAGE_HEADER } from "../src/provider.js";
 import { D1LoginStore } from "../src/stores/d1.js";
 import { chatMember, allowlist } from "../src/gates.js";
 import { makeFakeD1, makeFakeTelegram, makeRequest, cookieFrom, ALICE, MALLORY } from "./helpers.mjs";
@@ -230,7 +230,7 @@ test("guard on a signed-out request serves the sign-in page with a fresh QR", as
 
   const html = await first.response.text();
   assert.match(html, /<svg/);
-  const [, tokenInPage] = html.match(/var token = "([0-9a-f]{32})"/);
+  const [, tokenInPage] = html.match(/"token":"([0-9a-f]{32})"/);
   assert.equal((await (await pollOnce(auth, tokenInPage)).json()).status, "pending");
 });
 
@@ -313,4 +313,62 @@ test("a scan during an outage tells the user to scan again, and the QR is not sp
   state.down = false;
   const after = await auth.handleStart({ text: `/start cockpit_${token}`, from: ALICE });
   assert.equal(after.ok, true, "the token survived the outage");
+});
+
+function redirectIn(html) {
+  return JSON.parse(`"${html.match(/"redirectTo":"((?:[^"\\]|\\.)*)"/)[1]}"`);
+}
+
+test("beginLogin and /auth/qr hand out a tg:// app link beside the https deep link", async () => {
+  const { auth } = setup();
+  const { token, appLink } = await auth.beginLogin();
+  assert.equal(appLink, `tg://resolve?domain=example_bot&start=cockpit_${token}`);
+  assert.equal(auth.appLinkFor(token), appLink);
+
+  const body = await (await auth.handle(makeRequest("https://app.example/auth/qr"))).json();
+  assert.equal(body.appLink, `tg://resolve?domain=example_bot&start=cockpit_${body.token}`);
+  assert.equal(body.deepLink, `https://t.me/example_bot?start=cockpit_${body.token}`);
+});
+
+test("a signed-out deep link comes back to the page that was asked for", async () => {
+  const { auth } = setup();
+  const gate = await auth.guard(makeRequest("https://app.example/tickets/x.pdf?download=1"));
+  assert.equal(redirectIn(await gate.response.text()), "/tickets/x.pdf?download=1");
+
+  const explicit = await auth.guard(makeRequest("https://app.example/tickets/x.pdf"), { redirectTo: "/tickets" });
+  assert.equal(redirectIn(await explicit.response.text()), "/tickets");
+
+  // A POST cannot be replayed by a redirect, so it goes to the configured default.
+  const post = await auth.guard(makeRequest("https://app.example/api/save", { method: "POST" }));
+  assert.equal(redirectIn(await post.response.text()), "/");
+});
+
+test("the sign-in page only ever returns to a same-site path", async () => {
+  const { auth } = setup({ redirectTo: "/home" });
+  for (const hostile of ["https://evil.example/", "//evil.example/", "/\\evil.example/", "/\t/evil.example", "javascript:alert(1)", ""]) {
+    const gate = await auth.guard(makeRequest("https://app.example/"), { redirectTo: hostile });
+    assert.equal(redirectIn(await gate.response.text()), "/home", hostile);
+    assert.equal(redirectIn(await auth.loginPage({ redirectTo: hostile })), "/home", hostile);
+  }
+  assert.equal(sameSitePath("/a/b?c=//d"), "/a/b?c=//d");
+  assert.equal(sameSitePath("/"), "/");
+  assert.equal(sameSitePath(null), null);
+});
+
+test("every sign-in page response is marked so a service worker can refuse to cache it", async () => {
+  const { auth } = setup();
+  const fromRoute = await auth.handle(makeRequest("https://app.example/auth/login"));
+  assert.equal(fromRoute.headers.get(LOGIN_PAGE_HEADER), "login");
+  assert.equal(LOGIN_PAGE_HEADER, "X-Telegram-Qr-Auth");
+  const fromGuard = (await auth.guard(makeRequest("https://app.example/"))).response;
+  assert.equal(fromGuard.headers.get("X-Telegram-Qr-Auth"), "login");
+  assert.match(fromGuard.headers.get("Cache-Control"), /no-store/);
+});
+
+test("logoutResponse can also clear offline copies", async () => {
+  const { auth } = setup();
+  assert.equal(auth.logoutResponse().headers.get("Clear-Site-Data"), null);
+  const response = auth.logoutResponse({ clearSiteData: true });
+  assert.equal(response.headers.get("Clear-Site-Data"), '"cache", "storage"');
+  assert.match(response.headers.get("Set-Cookie"), /cockpit_session=;/);
 });
