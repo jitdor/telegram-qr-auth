@@ -138,6 +138,13 @@ Refresh tokens rotate on every use. Presenting an already-rotated token means ei
 retried or someone stole it and the real client already rotated — and the provider cannot tell
 which. It revokes the whole token family: the thief loses access, the user signs in again.
 
+A refresh also re-runs your authorization gate. If the gate says no, the refresh is refused
+(`invalid_grant`) but the family is left intact, since the gate re-runs every time and a user who
+really lost access can never mint tokens. If the gate could not be evaluated — the built-in
+`chatMember` gate marks Telegram API errors `transient` — the answer is `503
+temporarily_unavailable` and the same refresh token works again once Telegram is back. Custom gates
+should return `{ ok: false, transient: true }` for outages rather than a plain `false`.
+
 That includes two *simultaneous* refreshes with the same token: exactly one wins, and the other is
 treated as reuse, which signs the user out. So clients must **serialize refreshes and never retry
 one concurrently** — hold a single in-flight refresh per token and have other callers await it, and

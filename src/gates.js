@@ -28,8 +28,19 @@ export function chatMember({ chatId, statuses = MEMBER_STATUSES, onError = (err)
   }
   return async (user, ctx) => {
     if (!ctx?.telegram) throw new Error("chatMember gate needs a Telegram client — pass `botToken` or `telegram`");
-    const ok = await isChatMember(ctx.telegram, chatId, user.id, { statuses, onError });
-    return ok ? true : { ok: false, reason: "not_a_member" };
+    let failed = false;
+    const ok = await isChatMember(ctx.telegram, chatId, user.id, {
+      statuses,
+      onError: (err) => {
+        failed = true;
+        onError?.(err);
+      },
+    });
+    if (ok) return true;
+    // "Telegram could not be asked" is not "the user is not a member". Marking it transient lets
+    // callers refuse this request without doing anything destructive (clearing a session, revoking
+    // a refresh-token family) on the strength of an outage.
+    return failed ? { ok: false, reason: "telegram_unavailable", transient: true } : { ok: false, reason: "not_a_member" };
   };
 }
 
@@ -76,24 +87,36 @@ export function every(...gates) {
   };
 }
 
-/** Passes if any gate passes. Reports the last failure's reason when all of them fail. */
+/**
+ * Passes if any gate passes. Reports the last failure's reason when all of them fail — except that
+ * a transient failure wins: a gate that could not be checked might have passed, so the outcome is
+ * "try again", not a definitive denial.
+ */
 export function some(...gates) {
   return async (user, ctx) => {
     let last = { ok: false, reason: "denied" };
+    let transient = null;
     for (const gate of gates) {
       const result = normalize(await gate(user, ctx));
       if (result.ok) return true;
       last = result;
+      if (result.transient) transient = result;
     }
-    return last;
+    return transient ?? last;
   };
 }
 
-/** Coerces a gate's return value into `{ ok, reason }`. */
+/**
+ * Coerces a gate's return value into `{ ok, reason, transient? }`. `transient: true` means the gate
+ * could not decide (an upstream outage), as opposed to deciding "no".
+ */
 export function normalize(result) {
   if (result === true) return { ok: true };
   if (result === false || result == null) return { ok: false, reason: "denied" };
-  if (typeof result === "object") return { ok: Boolean(result.ok), reason: result.reason ?? "denied" };
+  if (typeof result === "object") {
+    const ok = Boolean(result.ok);
+    return { ok, reason: result.reason ?? "denied", ...(!ok && result.transient ? { transient: true } : {}) };
+  }
   return { ok: Boolean(result) };
 }
 

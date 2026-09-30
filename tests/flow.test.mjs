@@ -265,3 +265,52 @@ test("config mistakes fail at construction, not at 3am", () => {
   assert.throws(() => createTelegramQrAuth({ ...base, namespace: "my_app" }), /namespace/);
   assert.throws(() => createTelegramQrAuth({ ...base, namespace: "" }), /namespace/);
 });
+
+// ---- Telegram outage ----------------------------------------------------------------------------
+
+function outageTelegram(members = [ALICE.id]) {
+  const telegram = makeFakeTelegram({ members });
+  const state = { down: false };
+  const call = telegram.call.bind(telegram);
+  telegram.call = async (method, payload) => {
+    if (state.down && method === "getChatMember") throw new Error("502 Bad Gateway");
+    return call(method, payload);
+  };
+  return { telegram, state };
+}
+
+test("guard during a Telegram outage answers 503 and keeps the session, instead of signing the user out", async () => {
+  const { telegram, state } = outageTelegram();
+  const { auth } = setup({ telegram });
+
+  const { token } = await auth.beginLogin();
+  await auth.handleStart({ text: `/start cockpit_${token}`, from: ALICE });
+  const cookie = `${auth.cookieName}=${cookieFrom(await pollOnce(auth, token), auth.cookieName)}`;
+  assert.equal((await auth.guard(makeRequest("https://app.example/", { cookie }))).ok, true);
+
+  state.down = true;
+  const during = await auth.guard(makeRequest("https://app.example/", { cookie }));
+  assert.equal(during.ok, false);
+  assert.equal(during.reason, "telegram_unavailable");
+  assert.equal(during.response.status, 503);
+  assert.equal(during.response.headers.get("Set-Cookie"), null, "an outage must not clear the session cookie");
+
+  state.down = false;
+  assert.equal((await auth.guard(makeRequest("https://app.example/", { cookie }))).ok, true, "same cookie works again");
+});
+
+test("a scan during an outage tells the user to scan again, and the QR is not spent", async () => {
+  const { telegram, state } = outageTelegram();
+  const { auth } = setup({ telegram });
+  const { token } = await auth.beginLogin();
+
+  state.down = true;
+  const during = await auth.handleStart({ text: `/start cockpit_${token}`, from: ALICE });
+  assert.equal(during.ok, false);
+  assert.equal(during.reason, "telegram_unavailable");
+  assert.match(during.replyText, /scan the same QR code again/i);
+
+  state.down = false;
+  const after = await auth.handleStart({ text: `/start cockpit_${token}`, from: ALICE });
+  assert.equal(after.ok, true, "the token survived the outage");
+});

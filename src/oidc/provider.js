@@ -231,6 +231,9 @@ export function createOidcProvider(config) {
     const gate = normalizeGate(
       await auth.authorize({ id: session.id, username: session.username }, { telegram: auth.telegram, request, stage: "session" })
     );
+    if (!gate.ok && gate.transient) {
+      return fail("temporarily_unavailable", "Could not verify access right now. Try again shortly.");
+    }
     if (!gate.ok) {
       onEvent({ type: "authorize.denied", user_id: session.id, client_id: client.client_id, reason: gate.reason });
       return fail("access_denied", "You are not permitted to sign in to this provider.");
@@ -239,6 +242,9 @@ export function createOidcProvider(config) {
     // Per-client gate, if the client registered one.
     if (client.authorize) {
       const clientGate = normalizeGate(await client.authorize({ id: session.id, username: session.username }, { request, client }));
+      if (!clientGate.ok && clientGate.transient) {
+        return fail("temporarily_unavailable", "Could not verify access right now. Try again shortly.");
+      }
       if (!clientGate.ok) return fail("access_denied", "You are not permitted to use this application.");
     }
 
@@ -502,13 +508,18 @@ export function createOidcProvider(config) {
       const gate = normalizeGate(await auth.authorize(user, { telegram: auth.telegram, request, stage: "refresh" }));
       clientGate = gate.ok && client.authorize ? normalizeGate(await client.authorize(user, { request, client })) : gate;
     } catch {
-      // Cannot tell (Telegram unreachable, say). Fail closed, but do not burn the token or the
-      // family: the client can retry the same refresh token once the gate answers again.
+      clientGate = { ok: false, transient: true };
+    }
+    // Cannot tell (Telegram unreachable, a gate that threw). Refuse this attempt, but leave the token
+    // and its family alone: the client can present the same refresh token again once the gate answers.
+    if (!clientGate.ok && clientGate.transient) {
       return tokenError("temporarily_unavailable", "Could not verify access right now. Try again shortly.", 503);
     }
     if (!clientGate.ok) {
+      // Refuse without revoking. The gate re-runs on every refresh, so a user who really has lost
+      // access can never mint tokens; tearing the family down as well would add nothing, and would
+      // turn any gate that misreports a hiccup as "no" into a forced sign-out for the user.
       onEvent({ type: "token.refresh_denied", client_id: client.client_id, user_id: payload.userId, reason: clientGate.reason });
-      await store.revokeFamily(payload.familyId);
       return tokenError("invalid_grant", "Access for this user has been revoked");
     }
 

@@ -116,7 +116,12 @@ export interface GateContext {
   stage: GateStage;
 }
 
-export type GateResult = boolean | { ok: boolean; reason?: string };
+/**
+ * `transient: true` on a refusal means the gate could not decide (e.g. Telegram was unreachable) as
+ * opposed to deciding "no". The built-in `chatMember` gate sets it on API errors; callers then
+ * answer 503 / "try again" instead of clearing sessions or revoking refresh tokens.
+ */
+export type GateResult = boolean | { ok: boolean; reason?: string; transient?: boolean };
 export type Gate = (user: { id: number; username?: string }, ctx: GateContext) => Promise<GateResult> | GateResult;
 
 export declare function anyUser(): Gate;

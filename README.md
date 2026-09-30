@@ -205,6 +205,11 @@ if you run the OIDC provider):
 | `"session"` | **Every** guarded request               | Access revoked in Telegram is revoked here immediately |
 | `"refresh"` | OIDC provider: a refresh-token grant    | Someone removed from the group cannot keep minting tokens |
 
+A gate that cannot decide — the built-in `chatMember` when Telegram is unreachable — returns
+`{ ok: false, reason: "telegram_unavailable", transient: true }`. Refusals flagged `transient`
+are answered with a 503 / "try again" and never sign anyone out or revoke anything, so an outage
+does not become a mass logout. Custom gates should do the same.
+
 That last row is the important one: because the gate re-runs on every request, removing someone
 from the group locks them out on their next page load — not whenever their cookie happens to
 expire.

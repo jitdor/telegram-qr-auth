@@ -22,7 +22,7 @@ test("chatMember follows the chat", async () => {
   assert.equal(await gate(MALLORY, ctx(telegram)), true);
 });
 
-test("chatMember fails closed when Telegram errors", async () => {
+test("chatMember fails closed when Telegram errors, and says the failure is transient", async () => {
   const broken = {
     async getChatMember() {
       throw new Error("502 Bad Gateway");
@@ -30,8 +30,23 @@ test("chatMember fails closed when Telegram errors", async () => {
   };
   const errors = [];
   const gate = chatMember({ chatId: CHAT_ID, onError: (err) => errors.push(err) });
-  assert.deepEqual(await gate(ALICE, ctx(broken)), { ok: false, reason: "not_a_member" });
+  // Not a member of nothing: the gate could not be asked. Callers must not treat this as a
+  // definitive "no" (revoking sessions or refresh families over an outage).
+  assert.deepEqual(await gate(ALICE, ctx(broken)), { ok: false, reason: "telegram_unavailable", transient: true });
   assert.equal(errors.length, 1);
+});
+
+test("a transient failure survives every() and outranks a plain denial in some()", async () => {
+  const transient = async () => ({ ok: false, reason: "telegram_unavailable", transient: true });
+  const denied = async () => ({ ok: false, reason: "not_a_member" });
+  const ok = async () => true;
+
+  assert.equal((await every(transient, ok)(ALICE, ctx(null))).transient, true);
+  assert.equal((await some(transient, denied)(ALICE, ctx(null))).transient, true, "the unchecked gate might have passed");
+  assert.equal((await some(denied, transient)(ALICE, ctx(null))).transient, true);
+  assert.equal(await some(transient, ok)(ALICE, ctx(null)), true, "a pass is still a pass");
+  assert.equal((await some(denied, denied)(ALICE, ctx(null))).transient, undefined);
+  assert.equal(normalize({ ok: true, transient: true }).transient, undefined, "a pass is never transient");
 });
 
 test("chatMember treats left and kicked as out", async () => {

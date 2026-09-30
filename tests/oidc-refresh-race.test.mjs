@@ -29,6 +29,7 @@ const STORES = [
 
 async function setup(store, { clientOverrides = {} } = {}) {
   const allowed = new Set([ALICE.id]);
+  const outage = { on: false };
   const events = [];
   const auth = createTelegramQrAuth({
     botToken: "123:TEST",
@@ -39,6 +40,7 @@ async function setup(store, { clientOverrides = {} } = {}) {
     // Async on purpose: the gate yields, which is what lets concurrent refreshes interleave.
     authorize: async (user) => {
       await new Promise((resolve) => setTimeout(resolve, 5));
+      if (outage.on) return { ok: false, reason: "telegram_unavailable", transient: true };
       return allowed.has(user.id);
     },
     claims: () => ({ auth_time: Math.floor(Date.now() / 1000) }),
@@ -60,7 +62,7 @@ async function setup(store, { clientOverrides = {} } = {}) {
     store,
     onEvent: (event) => events.push(event),
   });
-  return { oidc, auth, allowed, events };
+  return { oidc, auth, allowed, outage, events };
 }
 
 const post = (oidc, body) =>
@@ -122,9 +124,26 @@ for (const [name, makeStore] of STORES) {
     assert.equal(denied.status, 400);
     assert.ok(events.some((e) => e.type === "token.refresh_denied"));
 
+    // Refused, not revoked: the gate re-runs on every refresh, so tearing the family down would add
+    // nothing for a user who really lost access, and would punish one whose gate misreported.
     allowed.add(ALICE.id);
     const again = await post(oidc, { grant_type: "refresh_token", refresh_token: first.refresh_token, client_id: "app-a" });
-    assert.equal(again.status, 400, "the family was revoked, not merely refused once");
+    assert.equal(again.status, 200, "restored access works with the same token");
+  });
+
+  test(`${name}: a gate outage answers 503 and leaves the refresh token usable`, async () => {
+    const { oidc, auth, outage, events } = await setup(makeStore());
+    const first = await firstTokens(oidc, auth);
+
+    outage.on = true;
+    const during = await post(oidc, { grant_type: "refresh_token", refresh_token: first.refresh_token, client_id: "app-a" });
+    assert.equal(during.status, 503);
+    assert.equal((await during.json()).error, "temporarily_unavailable");
+    assert.equal(events.some((e) => e.type === "token.refresh_denied"), false, "an outage is not a denial");
+
+    outage.on = false;
+    const after = await post(oidc, { grant_type: "refresh_token", refresh_token: first.refresh_token, client_id: "app-a" });
+    assert.equal(after.status, 200, "the same refresh token still works once the gate answers again");
   });
 
   test(`${name}: consumeCode is single-use even when raced`, async () => {

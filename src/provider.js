@@ -295,6 +295,18 @@ export function createTelegramQrAuth(config) {
     }
 
     const gate = normalizeGate(await authorize({ id: session.id, username: session.username }, { telegram, request, stage: "session" }));
+    if (!gate.ok && gate.transient) {
+      // The gate could not be evaluated (Telegram unreachable). That is not a revocation, so do not
+      // clear the cookie or show "access revoked" — ask the browser to try again.
+      return {
+        ok: false,
+        reason: gate.reason,
+        response: new Response("Temporarily unable to verify your access. Please try again shortly.", {
+          status: 503,
+          headers: { "Retry-After": "5", "Cache-Control": "no-store", "Content-Type": "text/plain; charset=UTF-8" },
+        }),
+      };
+    }
     if (!gate.ok) {
       const response =
         (await onDenied?.(session, gate.reason)) ??
@@ -376,6 +388,8 @@ function replyTextFor(result, branding = {}) {
   switch (result.reason) {
     case "bad_token":
       return branding.botBadTokenText ?? "That sign-in link looks invalid. Open the sign-in page again and scan the new QR code.";
+    case "telegram_unavailable":
+      return branding.botUnavailableText ?? "Telegram couldn't verify your access just now. Scan the same QR code again in a moment.";
     case "unknown_or_used":
       return branding.botExpiredText ?? "That sign-in link has expired or was already used. Refresh the sign-in page for a new QR code.";
     default:
