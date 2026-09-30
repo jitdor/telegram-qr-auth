@@ -715,8 +715,12 @@ There is nothing to install and nothing to build — clone it and run the tests:
 node --test tests/*.test.mjs
 ```
 
-150 tests, no network, no wrangler, no D1 emulator: the D1 tests run real SQLite (`node:sqlite`)
-against the real migration file, so the SQL that makes `confirm` single-use is actually exercised.
+No network, no wrangler, no D1 emulator: the D1 tests run real SQLite (`node:sqlite`) against the
+real migration file, so the SQL that makes `confirm` single-use is actually exercised.
+
+There are no releases: `main` is the version. Leave `version` in `package.json` as it is (npm
+wants the field to exist) rather than bumping it, and put behaviour changes in the commit message
+and pull request title instead.
 
 ---
 
