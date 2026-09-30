@@ -21,7 +21,7 @@
  * way round is the single most likely porting mistake — check yourself against TQA_TEST_VECTOR at
  * the bottom of this file before debugging anything else.
  *
- * Requires PHP 7.2+ (for hash_equals with the argument order used here). No extensions beyond the
+ * Requires PHP 5.6+ (for hash_equals). No extensions beyond the
  * always-available hash and json.
  */
 

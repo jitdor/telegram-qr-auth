@@ -16,9 +16,12 @@ internal static class Program
     private static async Task<int> Main(string[] args)
     {
         // Prove the crypto port is right before trusting anything it says.
-        Console.WriteLine(TelegramQrAuthVerifier.SelfTest()
-            ? "verifier self-test: ok"
-            : "verifier self-test: FAILED — do not ship this");
+        if (!TelegramQrAuthVerifier.SelfTest())
+        {
+            Console.Error.WriteLine("verifier self-test: FAILED — do not ship this");
+            return 1;
+        }
+        Console.WriteLine("verifier self-test: ok");
 
         var authBase = new Uri(args.Length > 0 ? args[0] : "https://auth.example.com");
         var client = new TelegramQrAuthClient(authBase);

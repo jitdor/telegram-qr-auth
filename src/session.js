@@ -106,7 +106,15 @@ export function parseCookies(header) {
     const idx = part.indexOf("=");
     if (idx === -1) return;
     const key = part.slice(0, idx).trim();
-    if (key) out[key] = decodeURIComponent(part.slice(idx + 1).trim());
+    if (!key) return;
+    const raw = part.slice(idx + 1).trim();
+    try {
+      out[key] = decodeURIComponent(raw);
+    } catch {
+      // A malformed value in some unrelated cookie must not take the whole request down; a mangled
+      // value of ours simply fails signature verification later.
+      out[key] = raw;
+    }
   });
   return out;
 }

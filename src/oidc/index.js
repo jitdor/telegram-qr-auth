@@ -26,5 +26,6 @@ export {
 } from "./clients.js";
 
 export { MemoryOidcStore, KvOidcStore } from "./store.js";
+export { D1OidcStore } from "./d1-store.js";
 export { createPkcePair, deriveChallenge, verifyChallenge, isValidChallenge, isValidVerifier, S256 } from "./pkce.js";
 export { renderConsentPage, renderErrorPage, SCOPE_DESCRIPTIONS } from "./consent-page.js";

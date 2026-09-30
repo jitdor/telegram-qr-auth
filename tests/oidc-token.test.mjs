@@ -211,7 +211,7 @@ test("PKCE is enforced and a missing verifier is refused", async () => {
 
   const response = await post(oidc, { grant_type: "authorization_code", code, redirect_uri: PUBLIC_REDIRECT, client_id: "app-a" });
   assert.equal(response.status, 400);
-  assert.match((await response.json()).error_description, /PKCE/);
+  assert.match((await response.json()).error_description, /invalid, expired, or does not match/);
 });
 
 test("a code issued to one client cannot be redeemed by another", async () => {
@@ -226,7 +226,7 @@ test("a code issued to one client cannot be redeemed by another", async () => {
   );
 
   assert.equal(stolen.status, 400);
-  assert.match((await stolen.json()).error_description, /not issued to this client/);
+  assert.match((await stolen.json()).error_description, /invalid, expired, or does not match/);
 });
 
 test("redirect_uri must be repeated exactly at redemption", async () => {

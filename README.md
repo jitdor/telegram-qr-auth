@@ -312,14 +312,14 @@ PKCE, consent, and refresh rotation with reuse detection. Relying parties integr
 OIDC library and never learn Telegram is involved.
 
 ```js
-import { createOidcProvider, loadSigningKeys, StaticClientRegistry, KvOidcStore } from "telegram-qr-auth/oidc";
+import { createOidcProvider, loadSigningKeys, StaticClientRegistry, D1OidcStore } from "telegram-qr-auth/oidc";
 
 const oidc = createOidcProvider({
   auth,                                        // your createTelegramQrAuth instance
   issuer: "https://auth.example.com",
   keys: await loadSigningKeys(env.OIDC_SIGNING_KEY),
   clients: new StaticClientRegistry([...]),
-  store: new KvOidcStore(env.OIDC),
+  store: new D1OidcStore(env.OIDC_DB),
 });
 
 export default { fetch: (request) => oidc.handle(request) };
@@ -340,7 +340,7 @@ Relying parties then point any OIDC library at
 Authorization code + PKCE only — implicit and hybrid are neither advertised nor implemented.
 
 **[docs/oidc.md](docs/oidc.md)** is the deployment guide, and it is worth reading before you point
-strangers at this: consent deliberately costs one tap, `KvOidcStore` has no compare-and-swap, rate
+strangers at this: consent deliberately costs one tap, `KvOidcStore` has no compare-and-swap (use `D1OidcStore`), rate
 limiting is yours to wire up, and running an IdP for other people's users carries obligations that
 no amount of test coverage addresses.
 

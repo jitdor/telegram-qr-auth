@@ -43,7 +43,7 @@ wrangler secret put OIDC_SIGNING_KEY
 
 ```js
 import { createTelegramQrAuth, KVLoginStore, chatMember } from "telegram-qr-auth";
-import { createOidcProvider, loadSigningKeys, StaticClientRegistry, KvOidcStore } from "telegram-qr-auth/oidc";
+import { createOidcProvider, loadSigningKeys, StaticClientRegistry, D1OidcStore } from "telegram-qr-auth/oidc";
 
 const auth = createTelegramQrAuth({
   botToken: env.TELEGRAM_BOT_TOKEN,
@@ -60,7 +60,7 @@ const oidc = createOidcProvider({
   issuer: "https://auth.example.com",       // exactly what RPs configure; no trailing slash
   keys: await loadSigningKeys(env.OIDC_SIGNING_KEY),
   clients: new StaticClientRegistry([...]),
-  store: new KvOidcStore(env.OIDC),
+  store: new D1OidcStore(env.OIDC_DB),
   pairwiseSalt: env.PAIRWISE_SALT,
 });
 
@@ -156,10 +156,12 @@ The code enforces the protocol. These are yours:
 
 - **Rate limiting.** `/authorize` and `/token` are unauthenticated by definition. Pass a
   `rateLimit(key, ctx)` function; wire it to Cloudflare's rate-limiting binding or equivalent.
-- **A transactional store.** `KvOidcStore` cannot do compare-and-swap, so `consumeCode` is a
-  read-then-delete: two simultaneous redemptions of one stolen code could both succeed. The window
-  is 60 seconds and PKCE still has to pass, but narrow is not closed. Use D1, a Durable Object, or
-  Postgres for anything third parties touch.
+- **A transactional store.** `KvOidcStore` cannot do compare-and-swap, so `consumeCode` and
+  `rotateRefreshToken` are read-then-write, and its family index is a read-modify-write: two
+  simultaneous redemptions of one stolen code — or two simultaneous refreshes with one stolen
+  token — could both succeed, defeating reuse detection. Use `D1OidcStore` (schema in
+  `migrations/oidc-d1.sql`), a Durable Object, or Postgres for anything third parties touch.
+  `examples/oidc-provider` uses D1 and refuses to boot without a rate limiter.
 - **Audit logging.** Wire `onEvent` to real storage. Every issuance, denial and reuse detection
   passes through it.
 - **Telegram's limits.** Every user of every relying party starts a chat with *your* single bot.

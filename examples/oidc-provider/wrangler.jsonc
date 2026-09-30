@@ -19,12 +19,14 @@
 
   "kv_namespaces": [
     // In-flight QR sign-ins.
-    { "binding": "LOGINS", "id": "<from `wrangler kv namespace create LOGINS`>" },
-    // Authorization requests, codes, refresh tokens, consent grants.
-    //
-    // KV has no compare-and-swap, so code redemption is a read-then-delete. Fine for first-party
-    // use; for third parties, swap this for D1 or a Durable Object — see docs/oidc.md.
-    { "binding": "OIDC", "id": "<from `wrangler kv namespace create OIDC`>" }
+    { "binding": "LOGINS", "id": "<from `wrangler kv namespace create LOGINS`>" }
+  ],
+
+  "d1_databases": [
+    // Authorization requests, codes, refresh tokens, consent grants. D1 rather than KV: code
+    // redemption and refresh rotation are single conditional statements here, where KV can only
+    // read-then-write. Apply migrations/oidc-d1.sql once.
+    { "binding": "OIDC_DB", "database_name": "oidc", "database_id": "<from `wrangler d1 create oidc`>" }
   ],
 
   "ratelimits": [

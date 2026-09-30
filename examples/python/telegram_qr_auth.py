@@ -76,7 +76,9 @@ class Verifier:
 
         # compare_digest, not ==. A plain comparison leaks the signature a byte at a time to anyone
         # patient enough to time the responses.
-        if not hmac.compare_digest(expected, signature):
+        # Compared as bytes: str inputs must be ASCII or compare_digest raises TypeError, and a bad
+        # credential has to come back as None, not as a 500.
+        if not hmac.compare_digest(expected.encode(), signature.encode("utf-8", "replace")):
             return None
 
         claims = read_unverified_claims(value)
@@ -178,11 +180,20 @@ class Client:
             time.sleep(interval)  # "pending" — still on screen, nobody has scanned it
 
     def _get_json(self, url: str) -> dict[str, Any]:
+        import urllib.error
         import urllib.request
 
         opener = self._opener or urllib.request.urlopen
-        with opener(url) as response:
-            return json.loads(response.read())
+        try:
+            with opener(url) as response:
+                return json.loads(response.read())
+        except urllib.error.HTTPError as err:
+            # /auth/poll answers a malformed or unsupported request with a 400 that still carries a
+            # JSON body ({"status": "invalid", ...}); surface that instead of a bare traceback.
+            try:
+                return json.loads(err.read())
+            except ValueError:
+                raise err
 
 
 # ---------------------------------------------------------------------------------------------

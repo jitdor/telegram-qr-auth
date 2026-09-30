@@ -13,7 +13,7 @@
 //   wrangler deploy
 //   curl "https://api.telegram.org/bot<TOKEN>/setWebhook?url=https://<worker>/telegram/webhook&secret_token=<WEBHOOK_SECRET>"
 
-import { createTelegramQrAuth, KVLoginStore, chatMember } from "telegram-qr-auth";
+import { createTelegramQrAuth, KVLoginStore, chatMember, escapeHtml } from "telegram-qr-auth";
 import { createWebhookHandler } from "telegram-qr-auth/bot";
 
 function buildAuth(env) {
@@ -80,7 +80,7 @@ function page(session) {
 <html lang="en">
 <head><meta charset="UTF-8"><title>Demo Dashboard</title></head>
 <body style="font-family: system-ui; max-width: 40rem; margin: 4rem auto;">
-  <h1>Signed in as ${session.name}</h1>
+  <h1>Signed in as ${escapeHtml(session.name)}</h1>
   <p>Telegram user id: <code>${session.id}</code></p>
   <p>They never typed a thing — one QR scan got them here.</p>
   <p><a href="/auth/logout">Sign out</a></p>

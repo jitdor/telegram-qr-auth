@@ -9,10 +9,12 @@
 //   consent grants          forever   "this user allowed this client these scopes"
 //
 // Codes and refresh tokens carry a hard single-use requirement, so `consumeCode` and
-// `rotateRefreshToken` must be atomic against themselves. MemoryOidcStore gets that from JS being
-// single-threaded. KvOidcStore cannot: KV has no compare-and-swap, so it approximates. For a
-// provider that third parties integrate with, back it with D1, a Durable Object, or Postgres — the
-// contract below is four collections of ordinary rows.
+// `rotateRefreshToken` must be atomic against themselves. MemoryOidcStore gets that by doing each
+// of them in a single synchronous step (no await between the check and the write — single-threaded
+// JS makes one map operation atomic, not a span that awaits in the middle). KvOidcStore cannot:
+// KV has no compare-and-swap, so it approximates. For a provider that third parties integrate
+// with, use D1OidcStore (one conditional UPDATE per redemption), a Durable Object, or Postgres —
+// the contract below is four collections of ordinary rows.
 
 const MINUTE = 60;
 
@@ -27,6 +29,7 @@ export class MemoryOidcStore {
     this.codes = new Map();
     this.refreshTokens = new Map();
     this.consents = new Map();
+    this.revokedFamilies = new Set();
   }
 
   // ---- authorization requests (paused while the user scans a QR) ----
@@ -71,7 +74,24 @@ export class MemoryOidcStore {
   // ---- refresh tokens ----
 
   async saveRefreshToken(token, payload, ttlSeconds) {
+    // A family killed by reuse detection stays dead: a request that was mid-flight when the family
+    // was revoked must not be able to plant a fresh, live token in it afterwards.
+    if (this.revokedFamilies.has(payload.familyId)) return;
     this.refreshTokens.set(token, { ...payload, expiresAt: nowSeconds() + ttlSeconds });
+  }
+
+  /**
+   * Atomically spends a refresh token. The check and the write happen in one synchronous step, so
+   * of any number of concurrent callers presenting the same token exactly one gets `status: "ok"`.
+   *
+   * @returns {Promise<{status: "ok"|"reused"|"missing", payload?: object}>}
+   */
+  async rotateRefreshToken(token) {
+    const payload = this.refreshTokens.get(token);
+    if (!payload || payload.expiresAt <= nowSeconds()) return { status: "missing" };
+    if (payload.used) return { status: "reused", payload };
+    this.refreshTokens.set(token, { ...payload, used: true });
+    return { status: "ok", payload };
   }
 
   async getRefreshToken(token) {
@@ -97,6 +117,7 @@ export class MemoryOidcStore {
    * off, and the real user signs in again.
    */
   async revokeFamily(familyId) {
+    this.revokedFamilies.add(familyId);
     for (const [token, payload] of this.refreshTokens) {
       if (payload.familyId === familyId) this.refreshTokens.delete(token);
     }
@@ -175,12 +196,33 @@ export class KvOidcStore {
   }
 
   async saveRefreshToken(token, payload, ttlSeconds) {
+    if (await this.kv.get(this.key("famrev", payload.familyId))) return; // family already killed
     await this.put("rt", token, { ...payload, expiresAt: nowSeconds() + ttlSeconds }, ttlSeconds);
-    // Index by family so revokeFamily does not have to scan the namespace.
-    const familyKey = this.key("fam", payload.familyId);
-    const family = (await this.kv.get(familyKey, "json")) ?? [];
-    family.push(token);
-    await this.kv.put(familyKey, JSON.stringify(family), { expirationTtl: Math.max(60, ttlSeconds) });
+    // Index by family so revokeFamily does not have to scan the namespace. Read-modify-write, so
+    // two simultaneous saves into one family can lose an entry — see the caveat on this class.
+    await this.appendIndex(this.key("fam", payload.familyId), token, ttlSeconds);
+    // Index by grant (user + client) so revokeConsent can find the families it has to end.
+    await this.appendIndex(this.key("grant", consentKey(payload.userId, payload.clientId)), payload.familyId, ttlSeconds);
+  }
+
+  async appendIndex(key, entry, ttlSeconds) {
+    const list = (await this.kv.get(key, "json")) ?? [];
+    if (!list.includes(entry)) list.push(entry);
+    await this.kv.put(key, JSON.stringify(list), { expirationTtl: Math.max(60, ttlSeconds) });
+  }
+
+  /**
+   * Best-effort rotation: KV has no compare-and-swap, so two simultaneous redemptions can both
+   * read `used: false`. Use D1OidcStore where refresh-token theft matters.
+   */
+  async rotateRefreshToken(token) {
+    const payload = await this.getRefreshToken(token);
+    if (!payload) return { status: "missing" };
+    if (payload.used) return { status: "reused", payload };
+    await this.kv.put(this.key("rt", token), JSON.stringify({ ...payload, used: true }), {
+      expirationTtl: Math.max(60, payload.expiresAt - nowSeconds()),
+    });
+    return { status: "ok", payload };
   }
 
   async getRefreshToken(token) {
@@ -198,6 +240,8 @@ export class KvOidcStore {
   }
 
   async revokeFamily(familyId) {
+    // Tombstone first, so a save racing this revocation is refused rather than resurrecting it.
+    await this.kv.put(this.key("famrev", familyId), "1", { expirationTtl: 400 * 24 * 3600 });
     const familyKey = this.key("fam", familyId);
     const family = (await this.kv.get(familyKey, "json")) ?? [];
     await Promise.all(family.map((token) => this.kv.delete(this.key("rt", token))));
@@ -218,6 +262,11 @@ export class KvOidcStore {
 
   async revokeConsent(userId, clientId) {
     await this.kv.delete(this.key("consent", consentKey(userId, clientId)));
+    // Withdrawing consent has to take the client's live access with it, or the button is a lie.
+    const grantKey = this.key("grant", consentKey(userId, clientId));
+    const families = (await this.kv.get(grantKey, "json")) ?? [];
+    for (const familyId of families) await this.revokeFamily(familyId);
+    await this.kv.delete(grantKey);
   }
 }
 

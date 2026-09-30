@@ -137,7 +137,8 @@ ${branding.headHtml}
         if (status === "expired" || status === "invalid") { showExpired(); return; }
         if (status === "denied") {
           stopped = true;
-          statusEl.textContent = (data && data.message) || text.denied;
+          // data.reason is a machine code for logs and gates, not copy for a person to read.
+          statusEl.textContent = text.denied;
           return;
         }
         setTimeout(poll, ${Number(pollIntervalMs)});

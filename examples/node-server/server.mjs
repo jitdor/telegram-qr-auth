@@ -9,7 +9,7 @@
 // see "Writing a store" in the README).
 
 import { createServer } from "node:http";
-import { createTelegramQrAuth, MemoryLoginStore, allowlist, anyUser, TelegramClient } from "telegram-qr-auth";
+import { createTelegramQrAuth, MemoryLoginStore, allowlist, anyUser, TelegramClient, escapeHtml } from "telegram-qr-auth";
 import { createStartHandler } from "telegram-qr-auth/bot";
 
 const PORT = Number(process.env.PORT ?? 8787);
@@ -45,7 +45,7 @@ async function protectedPage(request) {
   const gate = await auth.guard(request);
   if (!gate.ok) return gate.response;
   return new Response(
-    `<h1>Signed in as ${gate.session.name}</h1><p>id ${gate.session.id}</p><p><a href="/auth/logout">Sign out</a></p>`,
+    `<h1>Signed in as ${escapeHtml(gate.session.name)}</h1><p>id ${gate.session.id}</p><p><a href="/auth/logout">Sign out</a></p>`,
     { headers: { "Content-Type": "text/html; charset=UTF-8" } }
   );
 }

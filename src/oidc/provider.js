@@ -179,6 +179,15 @@ export function createOidcProvider(config) {
       return fail("unsupported_response_type", "Only the authorization code flow is supported.");
     }
 
+    if (params.response_mode !== undefined && params.response_mode !== "query") {
+      return fail("invalid_request", "Only response_mode=query is supported.");
+    }
+    for (const name of ["state", "nonce"]) {
+      if (params[name] !== undefined && String(params[name]).length > MAX_ECHOED_LENGTH) {
+        return fail("invalid_request", `${name} is too long.`);
+      }
+    }
+
     const scopes = String(params.scope ?? "").split(/\s+/).filter(Boolean);
     if (!scopes.includes("openid")) return fail("invalid_scope", "The openid scope is required.");
     const allowed = new Set(client.scopes);
@@ -235,7 +244,10 @@ export function createOidcProvider(config) {
 
     // ---- Phase 4: consent ----
 
-    const needsConsent = !client.first_party && !(await hasConsent(session.id, client.client_id, scopes));
+    // prompt=consent asks to be shown the screen again, even for a grant already remembered. It
+    // cannot force a first-party client (which has no consent screen) to show one.
+    const needsConsent =
+      !client.first_party && (prompt.has("consent") || !(await hasConsent(session.id, client.client_id, scopes)));
     if (needsConsent) {
       if (prompt.has("none")) return fail("consent_required", "Consent is required.");
 
@@ -251,6 +263,7 @@ export function createOidcProvider(config) {
           client,
           scopes,
           session,
+          redirectUri,
           requestId,
           csrfToken,
           actionPath: paths.consent,
@@ -269,7 +282,12 @@ export function createOidcProvider(config) {
   async function handleConsent(request) {
     if (request.method !== "POST") return new Response("Method not allowed", { status: 405 });
 
-    const form = await request.formData();
+    let form;
+    try {
+      form = await request.formData();
+    } catch {
+      return errorPage("invalid_request", "That form could not be read. Start again from the app.");
+    }
     const requestId = String(form.get("request_id") ?? "");
     const csrf = String(form.get("csrf") ?? "");
     const decision = String(form.get("decision") ?? "");
@@ -369,7 +387,7 @@ export function createOidcProvider(config) {
       case "authorization_code":
         return grantAuthorizationCode(client, body);
       case "refresh_token":
-        return grantRefreshToken(client, body);
+        return grantRefreshToken(client, body, request);
       default:
         return tokenError("unsupported_grant_type", "Supported: authorization_code, refresh_token");
     }
@@ -422,28 +440,28 @@ export function createOidcProvider(config) {
     const payload = await store.consumeCode(body.code);
     if (!payload) {
       onEvent({ type: "token.bad_code", client_id: client.client_id });
-      return tokenError("invalid_grant", "That code is invalid, expired, or already used");
+      return tokenError("invalid_grant", CODE_REJECTED);
     }
 
     // A code issued to one client being redeemed by another is theft, not confusion.
     if (payload.clientId !== client.client_id) {
       onEvent({ type: "token.code_client_mismatch", client_id: client.client_id, issued_to: payload.clientId });
-      return tokenError("invalid_grant", "That code was not issued to this client");
+      return tokenError("invalid_grant", CODE_REJECTED);
     }
 
     // redirect_uri must be repeated and must match — this is what stops a code obtained via one
     // registered callback from being redeemed as though it came through another.
     if (body.redirect_uri !== payload.redirectUri) {
-      return tokenError("invalid_grant", "redirect_uri does not match the authorization request");
+      return tokenError("invalid_grant", CODE_REJECTED);
     }
 
     if (payload.codeChallenge) {
       if (!(await verifyChallenge(body.code_verifier, payload.codeChallenge))) {
         onEvent({ type: "token.pkce_failed", client_id: client.client_id });
-        return tokenError("invalid_grant", "PKCE verification failed");
+        return tokenError("invalid_grant", CODE_REJECTED);
       }
     } else if (options.requirePkce || client.type !== CONFIDENTIAL_CLIENT) {
-      return tokenError("invalid_grant", "PKCE is required");
+      return tokenError("invalid_grant", CODE_REJECTED);
     }
 
     return issueTokens({
@@ -457,7 +475,7 @@ export function createOidcProvider(config) {
     });
   }
 
-  async function grantRefreshToken(client, body) {
+  async function grantRefreshToken(client, body, request) {
     if (!body.refresh_token) return tokenError("invalid_request", "refresh_token is required");
 
     const payload = await store.getRefreshToken(body.refresh_token);
@@ -469,10 +487,29 @@ export function createOidcProvider(config) {
     // Rotation with reuse detection. A token presented twice means either a client retry or a
     // stolen token already spent by its thief — and we cannot tell which from here. Killing the
     // whole family is the safe resolution: the attacker loses access, and the user re-authenticates.
-    if (payload.used) {
+    const reuse = async () => {
       onEvent({ type: "token.refresh_reuse", client_id: client.client_id, user_id: payload.userId, family: payload.familyId });
       await store.revokeFamily(payload.familyId);
       return tokenError("invalid_grant", "That refresh token has already been used");
+    };
+    if (payload.used) return reuse();
+
+    // Refresh is a side door next to /authorize, so it faces the same checks. Without them, someone
+    // removed from the group would keep minting tokens until the refresh TTL ran out.
+    const user = { id: payload.userId, username: payload.profile?.preferred_username ?? undefined };
+    let clientGate;
+    try {
+      const gate = normalizeGate(await auth.authorize(user, { telegram: auth.telegram, request, stage: "refresh" }));
+      clientGate = gate.ok && client.authorize ? normalizeGate(await client.authorize(user, { request, client })) : gate;
+    } catch {
+      // Cannot tell (Telegram unreachable, say). Fail closed, but do not burn the token or the
+      // family: the client can retry the same refresh token once the gate answers again.
+      return tokenError("temporarily_unavailable", "Could not verify access right now. Try again shortly.", 503);
+    }
+    if (!clientGate.ok) {
+      onEvent({ type: "token.refresh_denied", client_id: client.client_id, user_id: payload.userId, reason: clientGate.reason });
+      await store.revokeFamily(payload.familyId);
+      return tokenError("invalid_grant", "Access for this user has been revoked");
     }
 
     // Consent withdrawn between issuance and refresh must end the grant.
@@ -481,11 +518,11 @@ export function createOidcProvider(config) {
       return tokenError("invalid_grant", "Consent for this application has been withdrawn");
     }
 
-    await store.saveRefreshToken(
-      body.refresh_token,
-      { ...payload, used: true },
-      Math.max(60, payload.expiresAt - now())
-    );
+    // The spend itself is one atomic store operation. Reading `used`, awaiting the checks above and
+    // then writing `used: true` would let two simultaneous requests both win.
+    const rotation = await store.rotateRefreshToken(body.refresh_token);
+    if (rotation.status === "reused") return reuse();
+    if (rotation.status !== "ok") return tokenError("invalid_grant", "That refresh token is invalid or expired");
 
     const requested = String(body.scope ?? "").split(/\s+/).filter(Boolean);
     // Scope may narrow on refresh, never widen.
@@ -607,7 +644,12 @@ export function createOidcProvider(config) {
   async function handleRevoke(request) {
     if (request.method !== "POST") return tokenError("invalid_request", "POST required", 405);
 
-    const form = await request.formData();
+    let form;
+    try {
+      form = await request.formData();
+    } catch {
+      return tokenError("invalid_request", "Expected application/x-www-form-urlencoded");
+    }
     const body = Object.fromEntries([...form.entries()].map(([k, v]) => [k, String(v)]));
 
     const authenticated = await authenticateClient(request, body);
@@ -675,6 +717,13 @@ export function createOidcProvider(config) {
 
 // -------------------------------------------------------------------------------------------------
 
+// One description for every way a code can fail, so /token is not an oracle for which check tripped
+// (valid code? right client? right verifier?). The distinctions go to onEvent instead.
+const CODE_REJECTED = "The authorization code is invalid, expired, or does not match this request";
+
+// Bounds for values we echo into redirect URLs and sign into JWTs.
+const MAX_ECHOED_LENGTH = 512;
+
 function exceedsMaxAge(session, maxAge, seconds) {
   if (maxAge === undefined || maxAge === null || maxAge === "") return false;
   const limit = Number(maxAge);
@@ -712,7 +761,7 @@ function tokenError(error, description, status = 400) {
 
 function errorPage(error, description) {
   return new Response(renderErrorPage(error, description), {
-    status: 400,
+    status: error === "temporarily_unavailable" ? 429 : 400,
     headers: { "Content-Type": "text/html; charset=UTF-8", "Cache-Control": "no-store" },
   });
 }

@@ -7,7 +7,8 @@
 //
 // Setup:
 //   wrangler kv namespace create LOGINS
-//   wrangler kv namespace create OIDC
+//   wrangler d1 create oidc && wrangler d1 execute oidc --remote --file=migrations/oidc-d1.sql
+//   wrangler unsafe ratelimit ...             # bind RATE_LIMITER — the worker refuses to boot without it
 //   node -e "import('telegram-qr-auth/oidc').then(async m => console.log(JSON.stringify(await m.generateSigningKey())))"
 //   wrangler secret put OIDC_SIGNING_KEY        # the JSON from the line above
 //   wrangler secret put TELEGRAM_BOT_TOKEN
@@ -17,11 +18,12 @@
 //   curl "https://api.telegram.org/bot<TOKEN>/setWebhook?url=https://auth.example.com/telegram/webhook&secret_token=<WEBHOOK_SECRET>"
 //
 // Read docs/oidc.md before pointing third parties at this — particularly the notes on rate
-// limiting and on KV's lack of compare-and-swap.
+// limiting. Refresh-token rotation and code redemption need atomic writes, which is why this
+// example uses D1 rather than KV for the OIDC store.
 
 import { createTelegramQrAuth, KVLoginStore, chatMember } from "telegram-qr-auth";
 import { createWebhookHandler } from "telegram-qr-auth/bot";
-import { createOidcProvider, loadSigningKeys, StaticClientRegistry, KvOidcStore } from "telegram-qr-auth/oidc";
+import { createOidcProvider, loadSigningKeys, StaticClientRegistry, D1OidcStore } from "telegram-qr-auth/oidc";
 
 function buildAuth(env) {
   return createTelegramQrAuth({
@@ -74,6 +76,12 @@ function buildClients(env) {
 
 export default {
   async fetch(request, env, ctx) {
+    // /authorize and /token are unauthenticated by definition, so running without a limiter is
+    // running open. Fail closed instead of silently shipping that.
+    if (!env.RATE_LIMITER && env.ALLOW_UNLIMITED !== "true") {
+      return new Response("Misconfigured: bind RATE_LIMITER (or set ALLOW_UNLIMITED=true for local development).", { status: 500 });
+    }
+
     const auth = buildAuth(env);
     const url = new URL(request.url);
 
@@ -88,13 +96,10 @@ export default {
       issuer: env.ISSUER,
       keys: await loadSigningKeys(env.OIDC_SIGNING_KEY),
       clients: buildClients(env),
-      store: new KvOidcStore(env.OIDC),
+      store: new D1OidcStore(env.OIDC_DB),
       pairwiseSalt: env.PAIRWISE_SALT,
 
-      // /authorize and /token are unauthenticated by definition. Do not ship without this.
-      rateLimit: env.RATE_LIMITER
-        ? async (key) => (await env.RATE_LIMITER.limit({ key })).success
-        : undefined,
+      rateLimit: env.RATE_LIMITER ? async (key) => (await env.RATE_LIMITER.limit({ key })).success : undefined,
 
       // Every issuance, denial and reuse detection. Send it somewhere durable — reuse detection in
       // particular is the signal that a refresh token leaked, and it is worth alerting on.
