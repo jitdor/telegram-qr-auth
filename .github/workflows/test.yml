@@ -7,8 +7,8 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        # The store tests run real SQLite through node:sqlite, which needs Node 22.13+.
-        node: [22, 24]
+        # The store tests run real SQLite through node:sqlite, which needs Node 22.13+, the package minimum.
+        node: ["22.13", 24]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

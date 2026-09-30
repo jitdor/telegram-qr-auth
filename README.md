@@ -17,7 +17,7 @@ No phone number. No login code. No password. No form fields at all — the sign-
 ```
 
 Zero dependencies. One file per concern, no build step. Runs on Cloudflare Workers, Deno, Bun and
-Node 20+.
+Node 22.13+.
 
 ---
 
@@ -575,7 +575,7 @@ Built on WebCrypto, `fetch`, `Request`/`Response` and `btoa`/`atob` only.
 | Runtime            | Status                                                        |
 | ------------------ | ------------------------------------------------------------- |
 | Cloudflare Workers | Primary target — D1/KV stores included                        |
-| Node 20+           | Yes (`Request`/`Response` are global)                         |
+| Node 22.13+        | Yes (`Request`/`Response` are global)                         |
 | Deno, Bun          | Yes                                                           |
 | Browsers           | No, and never — this is server-side by construction           |
 
