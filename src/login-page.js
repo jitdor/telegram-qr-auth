@@ -1,20 +1,22 @@
 // The default sign-in page: a QR, a status line, and a way in for people who cannot scan.
 //
-// The QR is always a link to the same deep link it encodes. On a computer that opens the installed
-// Telegram client (often quicker than fetching a phone), and on a phone — where scanning a screen
-// you are holding is impossible — the page leads with an "Open Telegram" button instead. Both open
-// in a new tab so this page stays put and keeps polling; navigating away would end the sign-in. No framework, no bundler, no external requests — it is one self-contained HTML
-// string, which is what lets a consuming app be a single file with no build step.
+// The QR image encodes the https t.me deep link, because that is what a phone camera can open.
+// Clicking the QR (on a computer) and the "Open Telegram" button (on a phone or tablet) use the
+// tg:// app link instead, which goes straight to the installed Telegram app rather than through a
+// t.me web page, an "Open in Telegram?" prompt and a leftover browser tab. Opening an app link
+// does not navigate this page away, so it stays put and keeps polling. No framework, no bundler,
+// no external requests — it is one self-contained HTML string, which is what lets a consuming app
+// be a single file with no build step.
 //
 // Replace it wholesale by passing `renderLoginPage` to createTelegramQrAuth; restyle it by passing
-// `branding`. The one thing a replacement must keep is the polling script's contract with
-// `/auth/poll` — see POLL_STATUSES in provider.js.
+// `branding`. A replacement can reuse the polling script via `pollScript()` and supply only the
+// markup — see POLL_STATUSES in provider.js for the contract it implements.
 
 export const DEFAULT_BRANDING = {
   title: "Sign in",
   heading: "Sign in with Telegram",
   subtitle: "Scan this QR code with the Telegram app on your phone, or click it to open Telegram on this computer. No phone number, no code to type.",
-  mobileSubtitle: "Tap the button to open Telegram and confirm. No phone number, no code to type.",
+  mobileSubtitle: "Telegram opens. Tap Start at the bottom of the chat, then come back to this tab.",
   qrHintText: "Telegram installed on this computer? Click the code to open it.",
   qrLinkTitle: "Open Telegram to sign in",
   waitingText: "Waiting for scan…",
@@ -36,7 +38,9 @@ export const DEFAULT_BRANDING = {
 /**
  * @param {object} params
  * @param {string} params.token       The pending login token, handed to the polling script.
- * @param {string} params.deepLink    https://t.me/<bot>?start=<payload>
+ * @param {string} params.deepLink    https://t.me/<bot>?start=<payload> — what the QR encodes.
+ * @param {string} [params.appLink]   tg://resolve?domain=<bot>&start=<payload> — what the button
+ *   and a click on the QR open. Derived from `deepLink` when omitted.
  * @param {string} params.qrSvg       Inline SVG markup from qr.js.
  * @param {string} [params.error]     Message to show above the QR (e.g. "you were removed").
  * @param {string} params.pollPath    Absolute path the page should poll.
@@ -47,6 +51,7 @@ export const DEFAULT_BRANDING = {
 export function renderLoginPage(params) {
   const branding = { ...DEFAULT_BRANDING, ...(params.branding ?? {}) };
   const { token, deepLink, qrSvg, error, pollPath, pollIntervalMs = 2000, redirectTo = "/" } = params;
+  const appLink = params.appLink ?? appLinkFromDeepLink(deepLink);
   const errorHtml = error ? `<p class="tqa-error">${escapeHtml(error)}</p>` : "";
 
   return `<!DOCTYPE html>
@@ -107,39 +112,119 @@ ${branding.headHtml}
     <p class="tqa-sub tqa-pointer-only">${escapeHtml(branding.subtitle)}</p>
     <p class="tqa-sub tqa-touch-only">${escapeHtml(branding.mobileSubtitle)}</p>
     ${errorHtml}
-    <a class="tqa-open tqa-touch-only" id="tqa-open" href="${escapeHtml(deepLink)}" target="_blank" rel="noopener noreferrer">${escapeHtml(branding.mobileLinkText)}</a>
-    <div class="tqa-qr" id="tqa-qr"><a class="tqa-qr-link" href="${escapeHtml(deepLink)}" target="_blank" rel="noopener noreferrer" title="${escapeHtml(branding.qrLinkTitle)}" aria-label="${escapeHtml(branding.qrLinkTitle)}">${qrSvg}</a></div>
+    <a class="tqa-open tqa-touch-only" id="tqa-open" href="${escapeHtml(appLink)}">${escapeHtml(branding.mobileLinkText)}</a>
+    <div class="tqa-qr" id="tqa-qr"><a class="tqa-qr-link" href="${escapeHtml(appLink)}" title="${escapeHtml(branding.qrLinkTitle)}" aria-label="${escapeHtml(branding.qrLinkTitle)}">${qrSvg}</a></div>
     <p class="tqa-hint tqa-pointer-only" id="tqa-hint">${escapeHtml(branding.qrHintText)}</p>
     <p class="tqa-status" id="tqa-status">${escapeHtml(branding.waitingText)}</p>
     ${branding.footerHtml ? `<p class="tqa-foot">${branding.footerHtml}</p>` : ""}
   </main>
 <script>
-(function () {
-  var token = ${JSON.stringify(token)};
-  var pollPath = ${JSON.stringify(pollPath)};
-  var redirectTo = ${JSON.stringify(redirectTo)};
-  var text = ${JSON.stringify({
-    success: branding.successText,
-    expired: branding.expiredText,
-    denied: branding.deniedText,
-    retry: branding.retryText,
-  })};
-  var statusEl = document.getElementById("tqa-status");
-  var qrEl = document.getElementById("tqa-qr");
+${pollScript({
+  token,
+  pollPath,
+  redirectTo,
+  pollIntervalMs,
+  texts: { success: branding.successText, expired: branding.expiredText, denied: branding.deniedText, retry: branding.retryText },
+})}
+</script>
+</body>
+</html>`;
+}
+
+/**
+ * The tg:// app link for a t.me deep link: `https://t.me/<bot>?start=<payload>` becomes
+ * `tg://resolve?domain=<bot>&start=<payload>`. Anything else is returned unchanged.
+ */
+export function appLinkFromDeepLink(deepLink) {
+  let url;
+  try {
+    url = new URL(deepLink);
+  } catch {
+    return deepLink;
+  }
+  const domain = url.pathname.replace(/^\/+|\/+$/g, "");
+  if (url.protocol !== "https:" || url.hostname !== "t.me" || !/^[A-Za-z0-9_]+$/.test(domain)) return deepLink;
+  const start = url.searchParams.get("start");
+  return `tg://resolve?domain=${domain}${start ? `&start=${encodeURIComponent(start)}` : ""}`;
+}
+
+export const DEFAULT_POLL_TEXTS = {
+  success: DEFAULT_BRANDING.successText,
+  expired: DEFAULT_BRANDING.expiredText,
+  denied: DEFAULT_BRANDING.deniedText,
+  retry: DEFAULT_BRANDING.retryText,
+};
+
+export const DEFAULT_POLL_IDS = {
+  status: "tqa-status",
+  qr: "tqa-qr",
+  hide: ["tqa-open", "tqa-hint"],
+};
+
+/**
+ * The sign-in page's polling script, as JavaScript source for a custom page to put in a
+ * `<script>` element (add a CSP nonce there if you use one). It handles all of POLL_STATUSES, so a
+ * custom page only supplies markup:
+ *
+ * - `ids.status`: element whose text shows progress. Optional.
+ * - `ids.qr`: element whose contents are replaced by a "new QR code" button on expiry. Optional.
+ * - `ids.hide`: elements hidden once the sign-in is over (links that would open a dead token).
+ *
+ * It also sets `data-tqa-state` on `<html>` to "waiting", "signed-in", "expired" or "denied", so a
+ * page can style a status indicator in CSS alone.
+ *
+ * @param {object} params
+ * @param {string} params.token
+ * @param {string} params.pollPath
+ * @param {string} [params.redirectTo="/"]
+ * @param {number} [params.pollIntervalMs=2000]
+ * @param {object} [params.texts]  `{ success, expired, denied, retry }`; see DEFAULT_POLL_TEXTS.
+ * @param {object} [params.ids]    `{ status, qr, hide }`; see DEFAULT_POLL_IDS.
+ */
+export function pollScript({ token, pollPath, redirectTo = "/", pollIntervalMs = 2000, texts, ids } = {}) {
+  const interval = Math.max(250, Number(pollIntervalMs) || 2000);
+  const config = {
+    token,
+    pollPath,
+    redirectTo,
+    interval,
+    texts: { ...DEFAULT_POLL_TEXTS, ...(texts ?? {}) },
+    ids: { ...DEFAULT_POLL_IDS, ...(ids ?? {}) },
+  };
+  return `(function () {
+  var cfg = ${scriptJson(config)};
+  var text = cfg.texts;
+  var statusEl = cfg.ids.status ? document.getElementById(cfg.ids.status) : null;
+  var qrEl = cfg.ids.qr ? document.getElementById(cfg.ids.qr) : null;
+  var root = document.documentElement;
   var stopped = false;
+  var inFlight = false;
+  var timer = null;
+
+  function setState(state, message) {
+    root.setAttribute("data-tqa-state", state);
+    if (statusEl && message) statusEl.textContent = message;
+  }
 
   // Once the sign-in is over (expired, denied) the links would open a dead or refused token.
   function hideOpenLinks() {
-    ["tqa-open", "tqa-hint"].forEach(function (id) {
+    (cfg.ids.hide || []).forEach(function (id) {
       var el = document.getElementById(id);
       if (el) el.hidden = true;
     });
   }
 
-  function showExpired() {
+  function stop() {
     stopped = true;
+    clearTimeout(timer);
+    timer = null;
+  }
+
+  function showExpired() {
+    stop();
     hideOpenLinks();
-    statusEl.textContent = text.expired;
+    setState("expired", text.expired);
+    if (!qrEl) return;
     // Replacing the QR with the button rather than leaving a dead QR on screen: a stale QR that
     // still looks scannable is the single most confusing state this page can be in.
     qrEl.textContent = "";
@@ -151,39 +236,67 @@ ${branding.headHtml}
     qrEl.appendChild(button);
   }
 
+  // One loop only: every path into poll() goes through here, and a poll already on the wire is
+  // never doubled up by a timer or a visibility change.
+  function schedule(delay) {
+    clearTimeout(timer);
+    timer = stopped ? null : setTimeout(poll, delay);
+  }
+
   function poll() {
-    if (stopped) return;
-    fetch(pollPath + "?token=" + encodeURIComponent(token), { credentials: "same-origin" })
+    clearTimeout(timer);
+    timer = null;
+    if (stopped || inFlight) return;
+    inFlight = true;
+    fetch(cfg.pollPath + "?token=" + encodeURIComponent(cfg.token), { credentials: "same-origin", cache: "no-store" })
       .then(function (res) { return res.json(); })
       .then(function (data) {
+        inFlight = false;
         var status = data && data.status;
         if (status === "confirmed") {
-          stopped = true;
-          statusEl.textContent = text.success;
+          stop();
+          setState("signed-in", text.success);
           // Full navigation, not a fetch: the session cookie arrived on the poll response and the
           // app needs a fresh document request to render as the signed-in user.
-          window.location.href = redirectTo;
+          window.location.href = cfg.redirectTo;
           return;
         }
         if (status === "expired" || status === "invalid") { showExpired(); return; }
         if (status === "denied") {
-          stopped = true;
+          stop();
           hideOpenLinks();
           // data.reason is a machine code for logs and gates, not copy for a person to read.
-          statusEl.textContent = text.denied;
+          setState("denied", text.denied);
           return;
         }
-        setTimeout(poll, ${Number(pollIntervalMs)});
+        schedule(cfg.interval);
       })
       // A failed poll is usually a blip (sleeping laptop, flaky tunnel), so back off rather than
       // giving up — the token's own TTL is what ends this loop.
-      .catch(function () { setTimeout(poll, ${Number(pollIntervalMs) + 1000}); });
+      .catch(function () {
+        inFlight = false;
+        schedule(cfg.interval + 1000);
+      });
   }
-  setTimeout(poll, ${Number(pollIntervalMs)});
-})();
-</script>
-</body>
-</html>`;
+
+  // Background tabs have their timers throttled, so coming back from Telegram could mean a long
+  // wait for the next poll. Poll the moment the tab is visible again instead.
+  document.addEventListener("visibilitychange", function () {
+    if (document.visibilityState === "visible" && !stopped && !inFlight) poll();
+  });
+
+  root.setAttribute("data-tqa-state", "waiting");
+  schedule(cfg.interval);
+})();`;
+}
+
+/** JSON that is safe inside a <script> element: no "</script>", no HTML comment openers. */
+function scriptJson(value) {
+  return JSON.stringify(value)
+    .replace(/</g, "\\u003c")
+    .replace(/>/g, "\\u003e")
+    .replace(/\u2028/g, "\\u2028")
+    .replace(/\u2029/g, "\\u2029");
 }
 
 export function escapeHtml(text) {

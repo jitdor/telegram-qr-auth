@@ -78,9 +78,11 @@ export function createStartHandler(auth, options = {}) {
  * @param {object} [options]  Everything createStartHandler takes, plus:
  * @param {string} [options.secretToken]  Value configured as `secret_token` on setWebhook.
  * @param {Function} [options.onUnhandled]  `(update) => void|Promise` for updates that weren't sign-ins.
+ * @param {Function} [options.onError]  `(err, update) => void|Promise` when handling an update
+ *   throws. Defaults to `console.error`. The webhook answers 200 either way.
  */
 export function createWebhookHandler(auth, options = {}) {
-  const { secretToken, onUnhandled, ...handlerOptions } = options;
+  const { secretToken, onUnhandled, onError = defaultOnError, ...handlerOptions } = options;
   const handleUpdate = createStartHandler(auth, handlerOptions);
 
   return async function handleRequest(request) {
@@ -96,12 +98,25 @@ export function createWebhookHandler(auth, options = {}) {
       return new Response("Bad Request", { status: 400 });
     }
 
-    const handled = await handleUpdate(update);
-    if (!handled) await onUnhandled?.(update);
-
-    // Telegram retries on a non-2xx, which would replay the update — so always ack.
+    // Telegram retries a non-2xx and holds every later update behind it, so one failed reply
+    // (a Telegram outage, a bug) would block every sign-in after it. The confirm has already
+    // happened by the time the reply is sent; report the error and ack regardless.
+    try {
+      const handled = await handleUpdate(update);
+      if (!handled) await onUnhandled?.(update);
+    } catch (err) {
+      try {
+        await onError(err, update);
+      } catch {
+        // An error reporter that throws must not turn the ack into a 500 either.
+      }
+    }
     return new Response("ok");
   };
+}
+
+function defaultOnError(err) {
+  console.error("telegram-qr-auth: webhook update failed", err);
 }
 
 function formatClientContext(client) {

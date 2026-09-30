@@ -29,6 +29,13 @@ import { renderLoginPage as defaultRenderLoginPage } from "./login-page.js";
 /** The status values `/auth/poll` can return. A custom login page must understand all five. */
 export const POLL_STATUSES = ["pending", "confirmed", "expired", "invalid", "denied"];
 
+/**
+ * Header set on every sign-in page response. `Cache-Control: no-store` keeps browsers and proxies
+ * from caching the page, but a service worker's Cache API ignores it, so an offline service worker
+ * should check for this header and never store the response.
+ */
+export const LOGIN_PAGE_HEADER = "X-Telegram-Qr-Auth";
+
 const DEFAULT_TOKEN_TTL_SECONDS = 600; // 10 minutes — long enough to find your phone, short enough to matter
 const NAMESPACE_RE = /^[A-Za-z0-9-]{1,24}$/; // no "_": it is the payload separator
 
@@ -118,6 +125,11 @@ export function createTelegramQrAuth(config) {
     return `https://t.me/${botUsername}?start=${payloadFor(token)}`;
   }
 
+  /** Opens the Telegram app directly, skipping the t.me web page. Cameras need `deepLinkFor`. */
+  function appLinkFor(token) {
+    return `tg://resolve?domain=${botUsername}&start=${payloadFor(token)}`;
+  }
+
   /**
    * Pulls this app's token out of a `/start` payload or a whole message body. Returns null for
    * anything that isn't ours — including another app's namespace on the same bot, which is how one
@@ -145,21 +157,33 @@ export function createTelegramQrAuth(config) {
       client: captureClient && request ? describeClient(request) : null,
     });
     const deepLink = deepLinkFor(token);
-    return { token, deepLink, payload: payloadFor(token), svg: renderQrSvg(deepLink, qrOptions), expiresIn: tokenTtlSeconds };
+    return {
+      token,
+      deepLink,
+      appLink: appLinkFor(token),
+      payload: payloadFor(token),
+      svg: renderQrSvg(deepLink, qrOptions),
+      expiresIn: tokenTtlSeconds,
+    };
   }
 
-  /** The sign-in page as an HTML string, with a fresh token already minted into it. */
-  async function loginPage({ error, request, redirectTo: to = redirectTo } = {}) {
-    const { token, deepLink, svg } = await beginLogin({ request });
+  /**
+   * The sign-in page as an HTML string, with a fresh token already minted into it. A `redirectTo`
+   * given here must be a same-site path; anything else falls back to the configured default, so
+   * the page cannot be used to send people to another site.
+   */
+  async function loginPage({ error, request, redirectTo: to } = {}) {
+    const { token, deepLink, appLink, svg } = await beginLogin({ request });
     return renderLoginPage({
       token,
       deepLink,
+      appLink,
       qrSvg: svg,
       error,
       pollPath,
       pollIntervalMs,
       branding,
-      redirectTo: to,
+      redirectTo: (to !== undefined && sameSitePath(to)) || redirectTo,
     });
   }
 
@@ -170,6 +194,8 @@ export function createTelegramQrAuth(config) {
       // The page embeds a live one-time token, so it must never be cached by a browser, a proxy,
       // or the back button.
       "Cache-Control": "no-store, must-revalidate",
+      // ...and a service worker ignores Cache-Control, so give it something to check instead.
+      [LOGIN_PAGE_HEADER]: "login",
     });
     if (clearCookie) headers.append("Set-Cookie", codec.clearCookieHeader());
     return new Response(await loginPage({ error, request, redirectTo: to }), { status, headers });
@@ -286,12 +312,17 @@ export function createTelegramQrAuth(config) {
    * The guard to put in front of protected routes. Verifies the cookie *and* re-runs the
    * authorization gate live, so this is the call that makes revocation immediate.
    *
+   * After sign-in the page returns to `redirectTo` if given (same-site paths only), otherwise to
+   * the path that was requested, so a signed-out deep link lands where it pointed. Non-GET
+   * requests fall back to the configured `redirectTo`.
+   *
    * @returns {Promise<{ok: true, session: object} | {ok: false, reason: string, response: Response}>}
    */
-  async function guard(request, { onDenied } = {}) {
+  async function guard(request, { onDenied, redirectTo: to } = {}) {
+    const returnTo = to ?? returnPathOf(request);
     const session = await getSession(request);
     if (!session) {
-      return { ok: false, reason: "unauthenticated", response: await loginResponse({ request }) };
+      return { ok: false, reason: "unauthenticated", response: await loginResponse({ request, redirectTo: returnTo }) };
     }
 
     const gate = normalizeGate(await authorize({ id: session.id, username: session.username }, { telegram, request, stage: "session" }));
@@ -314,6 +345,7 @@ export function createTelegramQrAuth(config) {
           request,
           status: 403,
           clearCookie: true,
+          redirectTo: returnTo,
           error: branding?.deniedText ?? "Your access to this app has been revoked.",
         }));
       return { ok: false, reason: gate.reason, response };
@@ -322,9 +354,15 @@ export function createTelegramQrAuth(config) {
     return { ok: true, session };
   }
 
-  function logoutResponse({ redirectTo: to = redirectTo } = {}) {
+  /**
+   * `clearSiteData: true` also sends `Clear-Site-Data: "cache", "storage"`, which wipes the
+   * origin's HTTP cache, Cache API and service worker, so no offline copy of a signed-in page
+   * survives the sign-out. It clears every one of those for the whole origin, not just this app's.
+   */
+  function logoutResponse({ redirectTo: to = redirectTo, clearSiteData = false } = {}) {
     const headers = new Headers({ Location: to, "Cache-Control": "no-store" });
     headers.append("Set-Cookie", codec.clearCookieHeader());
+    if (clearSiteData) headers.set("Clear-Site-Data", '"cache", "storage"');
     return new Response(null, { status: 302, headers });
   }
 
@@ -348,8 +386,8 @@ export function createTelegramQrAuth(config) {
     if (url.pathname === loginPath) return loginResponse({ request });
     if (url.pathname === qrPath) {
       // For apps that render their own sign-in UI and just want the ingredients.
-      const { token, deepLink, svg, expiresIn } = await beginLogin({ request });
-      return jsonResponse({ token, deepLink, svg, expiresIn, pollPath });
+      const { token, deepLink, appLink, svg, expiresIn } = await beginLogin({ request });
+      return jsonResponse({ token, deepLink, appLink, svg, expiresIn, pollPath });
     }
     return null;
   }
@@ -374,6 +412,7 @@ export function createTelegramQrAuth(config) {
     logoutResponse,
     handle,
     deepLinkFor,
+    appLinkFor,
 
     // Escape hatches for apps that need to go below the convenience layer.
     store,
@@ -394,6 +433,27 @@ function replyTextFor(result, branding = {}) {
       return branding.botExpiredText ?? "That sign-in link has expired or was already used. Refresh the sign-in page for a new QR code.";
     default:
       return branding.botDeniedText ?? "You're not authorized to sign in to this app.";
+  }
+}
+
+/**
+ * `value` if it is a path on this site, else null. It must start with a single "/", since "//host"
+ * and "/\\host" are protocol-relative URLs to another site in browsers. Backslashes and control
+ * characters are refused outright: browsers rewrite or strip them before resolving.
+ */
+export function sameSitePath(value) {
+  if (typeof value !== "string" || !value.startsWith("/")) return null;
+  if (value[1] === "/" || /[\u0000-\u001f\u007f\\]/.test(value)) return null;
+  return value;
+}
+
+function returnPathOf(request) {
+  if (request.method !== "GET" && request.method !== "HEAD") return undefined;
+  try {
+    const url = new URL(request.url);
+    return sameSitePath(url.pathname + url.search) ?? undefined;
+  } catch {
+    return undefined;
   }
 }
 

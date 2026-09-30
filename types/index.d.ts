@@ -250,7 +250,10 @@ export interface TelegramQrAuthConfig {
 
 export interface RenderLoginPageParams {
   token: string;
+  /** https://t.me/<bot>?start=<payload> — what the QR encodes. */
   deepLink: string;
+  /** tg://resolve?domain=<bot>&start=<payload> — what the button and a click on the QR open. */
+  appLink?: string;
   qrSvg: string;
   error?: string;
   pollPath: string;
@@ -269,6 +272,7 @@ export interface SessionClaims extends Record<string, unknown> {
 export interface BeginLoginResult {
   token: string;
   deepLink: string;
+  appLink: string;
   payload: string;
   svg: string;
   expiresIn: number;
@@ -301,12 +305,20 @@ export interface TelegramQrAuth {
   poll(request: Request): Promise<Response>;
   getSession(request: Request): Promise<SessionClaims | null>;
   verifyAssertion(assertion: string | null): Promise<SessionClaims | null>;
-  guard(request: Request, options?: { onDenied?: (session: SessionClaims, reason: string) => Promise<Response | undefined> | Response | undefined }): Promise<GuardResult>;
+  guard(
+    request: Request,
+    options?: {
+      onDenied?: (session: SessionClaims, reason: string) => Promise<Response | undefined> | Response | undefined;
+      /** Where to return after sign-in. Same-site paths only; defaults to the requested path for GET/HEAD. */
+      redirectTo?: string;
+    }
+  ): Promise<GuardResult>;
   loginPage(options?: { error?: string; request?: Request; redirectTo?: string }): Promise<string>;
   loginResponse(options?: { error?: string; status?: number; request?: Request; clearCookie?: boolean; redirectTo?: string }): Promise<Response>;
-  logoutResponse(options?: { redirectTo?: string }): Response;
+  logoutResponse(options?: { redirectTo?: string; clearSiteData?: boolean }): Response;
   handle(request: Request): Promise<Response | null>;
   deepLinkFor(token: string): string;
+  appLinkFor(token: string): string;
 
   store: LoginStore;
   telegram: TelegramApi | null;
@@ -316,6 +328,9 @@ export interface TelegramQrAuth {
 
 export declare function createTelegramQrAuth(config: TelegramQrAuthConfig): TelegramQrAuth;
 export declare const POLL_STATUSES: readonly string[];
+/** "X-Telegram-Qr-Auth" — set to "login" on every sign-in page response. */
+export declare const LOGIN_PAGE_HEADER: string;
+export declare function sameSitePath(value: unknown): string | null;
 export declare function jsonResponse(data: unknown, status?: number, extraHeaders?: Headers): Response;
 
 export interface StartHandlerOptions {
@@ -328,12 +343,46 @@ export interface StartHandlerOptions {
 export declare function createStartHandler(auth: TelegramQrAuth, options?: StartHandlerOptions): (update: any) => Promise<boolean>;
 export declare function createWebhookHandler(
   auth: TelegramQrAuth,
-  options?: StartHandlerOptions & { secretToken?: string; onUnhandled?: (update: any) => void | Promise<void> }
+  options?: StartHandlerOptions & {
+    secretToken?: string;
+    onUnhandled?: (update: any) => void | Promise<void>;
+    /** Called when handling an update throws. Defaults to console.error; the webhook still answers 200. */
+    onError?: (err: unknown, update: any) => void | Promise<void>;
+  }
 ): (request: Request) => Promise<Response>;
 
 export declare function qrSvg(text: string, options?: QrOptions): string;
 export declare function qrDataUri(text: string, options?: QrOptions): string;
 export declare function renderLoginPage(params: RenderLoginPageParams): string;
+export declare function appLinkFromDeepLink(deepLink: string): string;
+
+export interface PollTexts {
+  success?: string;
+  expired?: string;
+  denied?: string;
+  retry?: string;
+}
+
+export interface PollIds {
+  /** Element whose text shows progress. */
+  status?: string | null;
+  /** Element whose contents become a "new QR code" button on expiry. */
+  qr?: string | null;
+  /** Elements hidden once the sign-in is over. */
+  hide?: string[];
+}
+
+/** JavaScript source for a `<script>` element on a custom sign-in page. */
+export declare function pollScript(params: {
+  token: string;
+  pollPath: string;
+  redirectTo?: string;
+  pollIntervalMs?: number;
+  texts?: PollTexts;
+  ids?: PollIds;
+}): string;
+export declare const DEFAULT_POLL_TEXTS: Required<PollTexts>;
+export declare const DEFAULT_POLL_IDS: { status: string; qr: string; hide: string[] };
 export declare const DEFAULT_BRANDING: Required<Branding>;
 export declare function escapeHtml(text: unknown): string;
 
