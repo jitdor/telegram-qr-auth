@@ -232,13 +232,30 @@ nothing at all.)
 | ------------------ | ------------------------------ | --------------------------------------------------------- |
 | `KVLoginStore`     | `wrangler kv namespace create` | **The default.** No schema, no migration, TTL cleanup free |
 | `D1LoginStore`     | one table, one migration       | You want strictly atomic single-use, or already run D1     |
+| `DoLoginStore`     | one Durable Object class       | Atomic + consistent, with no database to provision         |
 | `MemoryLoginStore` | nothing                        | Both halves in one process, or tests                       |
 
 ```js
 new KVLoginStore(env.LOGINS, { prefix: "tgqr:" })
 new D1LoginStore(env.DB, { table: "telegram_qr_logins", sweepAfterSeconds: 86400 })
+new DoLoginStore(env.QRAUTH_DO, { name: "default" })
 new MemoryLoginStore()
 ```
+
+**Durable Object store.** Export the class from your Worker, bind it, and pass the binding:
+
+```js
+import { DurableObject } from "cloudflare:workers";
+import { defineQrAuthStorage, DoLoginStore } from "telegram-qr-auth";
+export class QrAuthStorage extends defineQrAuthStorage(DurableObject) {}
+// wrangler.jsonc: durable_objects.bindings [{ name: "QRAUTH_DO", class_name: "QrAuthStorage" }]
+//                 migrations [{ tag: "v1", new_sqlite_classes: ["QrAuthStorage"] }]
+```
+
+It is strongly consistent and `confirm` is atomic, like D1, but the object creates its own tables, so
+there is nothing to provision or migrate. For the OIDC provider use `DoOidcStore` from
+`telegram-qr-auth/oidc` — the same object can hold both. If the bot is a separate Worker, bind the
+class there with `script_name`, and use the same `name` on both sides.
 
 **The KV trade-off, stated honestly.** KV is eventually consistent, so a confirmation may take an
 extra poll cycle to become visible — invisible against a 2-second poll and a 10-minute TTL. And its
@@ -247,7 +264,7 @@ scans of the same QR could both succeed. Note what that costs: both scanners alr
 authorization gate, so the outcome is two sessions for two people each entitled to one — not an
 unauthorized session, and the token is still consumed on first redemption so it can't be replayed
 later. If you want one QR to mean exactly one session always, use `D1LoginStore` (its `confirm` is
-a single conditional `UPDATE`, atomic by construction) or write a Durable Object store.
+a single conditional `UPDATE`, atomic by construction) or `DoLoginStore`.
 
 D1 needs its table created once:
 

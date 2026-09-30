@@ -7,6 +7,7 @@
 //
 // Setup:
 //   wrangler kv namespace create LOGINS
+//   EITHER a Durable Object (one binding, no provisioning — see wrangler.jsonc), OR:
 //   wrangler d1 create oidc && wrangler d1 execute oidc --remote --file=migrations/oidc-d1.sql
 //   wrangler unsafe ratelimit ...             # bind RATE_LIMITER — the worker refuses to boot without it
 //   node -e "import('telegram-qr-auth/oidc').then(async m => console.log(JSON.stringify(await m.generateSigningKey())))"
@@ -21,15 +22,23 @@
 // limiting. Refresh-token rotation and code redemption need atomic writes, which is why this
 // example uses D1 rather than KV for the OIDC store.
 
-import { createTelegramQrAuth, KVLoginStore, chatMember } from "telegram-qr-auth";
+import { DurableObject } from "cloudflare:workers";
+import { createTelegramQrAuth, KVLoginStore, DoLoginStore, defineQrAuthStorage, chatMember } from "telegram-qr-auth";
 import { createWebhookHandler } from "telegram-qr-auth/bot";
-import { createOidcProvider, loadSigningKeys, StaticClientRegistry, D1OidcStore } from "telegram-qr-auth/oidc";
+import { createOidcProvider, loadSigningKeys, StaticClientRegistry, D1OidcStore, DoOidcStore } from "telegram-qr-auth/oidc";
+
+// One SQLite-backed Durable Object can hold both the QR sign-in records and the provider state.
+export class QrAuthStorage extends defineQrAuthStorage(DurableObject) {}
+
+// Choose storage by binding: QRAUTH_DO (Durable Object) or LOGINS + OIDC_DB (KV + D1).
+const loginStore = (env) => (env.QRAUTH_DO ? new DoLoginStore(env.QRAUTH_DO) : new KVLoginStore(env.LOGINS));
+const oidcStore = (env) => (env.QRAUTH_DO ? new DoOidcStore(env.QRAUTH_DO) : new D1OidcStore(env.OIDC_DB));
 
 function buildAuth(env) {
   return createTelegramQrAuth({
     botToken: env.TELEGRAM_BOT_TOKEN,
     botUsername: env.TELEGRAM_BOT_USERNAME,
-    store: new KVLoginStore(env.LOGINS),
+    store: loginStore(env),
     namespace: "idp",
 
     // Who may sign in AT ALL. Per-client restrictions go on the client itself; this is the front
@@ -96,7 +105,7 @@ export default {
       issuer: env.ISSUER,
       keys: await loadSigningKeys(env.OIDC_SIGNING_KEY),
       clients: buildClients(env),
-      store: new D1OidcStore(env.OIDC_DB),
+      store: oidcStore(env),
       pairwiseSalt: env.PAIRWISE_SALT,
 
       rateLimit: env.RATE_LIMITER ? async (key) => (await env.RATE_LIMITER.limit({ key })).success : undefined,

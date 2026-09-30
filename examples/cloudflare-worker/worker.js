@@ -13,17 +13,35 @@
 //   wrangler deploy
 //   curl "https://api.telegram.org/bot<TOKEN>/setWebhook?url=https://<worker>/telegram/webhook&secret_token=<WEBHOOK_SECRET>"
 
-import { createTelegramQrAuth, KVLoginStore, chatMember, escapeHtml } from "telegram-qr-auth";
+import { DurableObject } from "cloudflare:workers";
+import {
+  createTelegramQrAuth,
+  KVLoginStore,
+  DoLoginStore,
+  defineQrAuthStorage,
+  chatMember,
+  escapeHtml,
+} from "telegram-qr-auth";
 import { createWebhookHandler } from "telegram-qr-auth/bot";
+
+// The Durable Object class, needed only if you bind QRAUTH_DO (see wrangler.jsonc). Harmless to
+// export otherwise.
+export class QrAuthStorage extends defineQrAuthStorage(DurableObject) {}
+
+// Storage is a deployment choice, not a code change: bind QRAUTH_DO for a SQLite-backed Durable
+// Object (strongly consistent, nothing to provision), or LOGINS for KV.
+function loginStore(env) {
+  return env.QRAUTH_DO ? new DoLoginStore(env.QRAUTH_DO) : new KVLoginStore(env.LOGINS);
+}
 
 function buildAuth(env) {
   return createTelegramQrAuth({
     botToken: env.TELEGRAM_BOT_TOKEN,
     botUsername: env.TELEGRAM_BOT_USERNAME,
     // KV holds one 10-minute record per in-flight sign-in and nothing else — there is no user
-    // table anywhere in this app. Swap in `new D1LoginStore(env.DB)` if you want a strictly atomic
-    // single-use guarantee, or `new MemoryLoginStore()` if both halves share one process.
-    store: new KVLoginStore(env.LOGINS),
+    // table anywhere in this app. Swap in `new D1LoginStore(env.DB)` (or bind QRAUTH_DO) if you want a strictly
+    // atomic single-use guarantee, or `new MemoryLoginStore()` if both halves share one process.
+    store: loginStore(env),
 
     // Distinguishes this app's tokens from any other app served by the same bot.
     namespace: "demo",

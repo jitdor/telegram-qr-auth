@@ -13,8 +13,10 @@
 // writes it and a different one reads it. Hence an injected store rather than an in-process map.
 //
 // KVLoginStore is the recommended default: no schema, no migration, TTL-based cleanup for free.
-// Reach for D1LoginStore only if you want a strictly atomic single-use guarantee or you are
-// already running D1, and for MemoryLoginStore only when both halves share one process.
+// Reach for D1LoginStore or DoLoginStore (a SQLite-backed Durable Object; no database to
+// provision) if you want a strictly atomic single-use guarantee and read-your-writes consistency
+// between the web Worker and the bot, and for MemoryLoginStore only when both halves share one
+// process.
 //
 // The contract:
 //
@@ -35,3 +37,4 @@
 export { KVLoginStore } from "./kv.js";
 export { D1LoginStore } from "./d1.js";
 export { MemoryLoginStore } from "./memory.js";
+export { DoLoginStore, defineQrAuthStorage } from "./do.js";

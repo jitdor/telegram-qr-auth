@@ -107,3 +107,46 @@ export function cookieFrom(response, name) {
 
 export const ALICE = { id: 111, first_name: "Alice", last_name: "Ng", username: "alice" };
 export const MALLORY = { id: 999, first_name: "Mallory" };
+
+/**
+ * A Durable Object namespace double. It builds the *real* storage class (from defineQrAuthStorage)
+ * over real SQLite, and calls it the way RPC does: asynchronously, with arguments and results
+ * passed through structuredClone so anything that could not cross the wire fails here too.
+ */
+export function makeFakeDONamespace(defineStorage) {
+  class FakeDurableObject {
+    constructor(ctx, env) {
+      this.ctx = ctx;
+      this.env = env;
+    }
+  }
+  const StorageClass = defineStorage(FakeDurableObject);
+  const objects = new Map();
+
+  function makeSql() {
+    const sqlite = new DatabaseSync(":memory:");
+    return {
+      exec(query, ...args) {
+        const rows = sqlite.prepare(query).all(...args);
+        const isRead = /^\s*select/i.test(query);
+        const changes = isRead ? 0 : sqlite.prepare("SELECT changes() AS c").get().c;
+        return { toArray: () => rows, rowsWritten: changes };
+      },
+    };
+  }
+
+  return {
+    objects,
+    idFromName: (name) => name,
+    get(id) {
+      if (!objects.has(id)) objects.set(id, new StorageClass({ storage: { sql: makeSql() } }, {}));
+      const target = objects.get(id);
+      return new Proxy(
+        {},
+        {
+          get: (_, method) => async (...args) => structuredClone(await target[method](...structuredClone(args))),
+        }
+      );
+    },
+  };
+}

@@ -160,7 +160,8 @@ The code enforces the protocol. These are yours:
   `rotateRefreshToken` are read-then-write, and its family index is a read-modify-write: two
   simultaneous redemptions of one stolen code — or two simultaneous refreshes with one stolen
   token — could both succeed, defeating reuse detection. Use `D1OidcStore` (schema in
-  `migrations/oidc-d1.sql`), a Durable Object, or Postgres for anything third parties touch.
+  `migrations/oidc-d1.sql`) or `DoOidcStore` (a SQLite-backed Durable Object, no database to
+  provision) for anything third parties touch.
   `examples/oidc-provider` uses D1 and refuses to boot without a rate limiter.
 - **Audit logging.** Wire `onEvent` to real storage. Every issuance, denial and reuse detection
   passes through it.

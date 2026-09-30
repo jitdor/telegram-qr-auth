@@ -11,10 +11,12 @@ import { generateSigningKey, loadSigningKeys } from "../src/oidc/keys.js";
 import { StaticClientRegistry } from "../src/oidc/clients.js";
 import { MemoryOidcStore, KvOidcStore } from "../src/oidc/store.js";
 import { D1OidcStore } from "../src/oidc/d1-store.js";
+import { DoOidcStore } from "../src/oidc/do-store.js";
+import { defineQrAuthStorage } from "../src/stores/do.js";
 import { createPkcePair } from "../src/oidc/pkce.js";
 import { renderConsentPage } from "../src/oidc/consent-page.js";
 import { parseCookies } from "../src/session.js";
-import { makeFakeTelegram, makeFakeD1, makeFakeKV, makeRequest, cookieFrom, ALICE } from "./helpers.mjs";
+import { makeFakeTelegram, makeFakeD1, makeFakeKV, makeFakeDONamespace, makeRequest, cookieFrom, ALICE } from "./helpers.mjs";
 
 const ISSUER = "https://auth.example.com";
 const REDIRECT = "https://app-a.example.com/callback";
@@ -22,6 +24,7 @@ const REDIRECT = "https://app-a.example.com/callback";
 const STORES = [
   ["MemoryOidcStore", () => new MemoryOidcStore()],
   ["D1OidcStore", () => new D1OidcStore(makeFakeD1({ sql: "oidc-d1.sql" }))],
+  ["DoOidcStore", () => new DoOidcStore(makeFakeDONamespace(defineQrAuthStorage))],
 ];
 
 async function setup(store, { clientOverrides = {} } = {}) {
@@ -178,4 +181,21 @@ test("the consent screen shows the callback host that was actually matched", () 
 test("parseCookies survives malformed percent-encoding elsewhere in the jar", () => {
   const jar = parseCookies("bad=%E0%A4%A; session=abc%20def");
   assert.equal(jar.session, "abc def");
+});
+
+test("DoLoginStore and DoOidcStore can share one object without touching each other's rows", async () => {
+  const binding = makeFakeDONamespace(defineQrAuthStorage);
+  const { DoLoginStore } = await import("../src/stores/do.js");
+  const login = new DoLoginStore(binding);
+  const oidc = new DoOidcStore(binding);
+
+  await login.create({ token: "t".repeat(32), namespace: "site", expiresAt: Math.floor(Date.now() / 1000) + 600 });
+  await oidc.saveCode("c1", { clientId: "x" }, 60);
+
+  assert.equal((await login.get("t".repeat(32), "site")).status, "pending");
+  assert.ok(await oidc.consumeCode("c1"));
+});
+
+test("Do stores refuse a missing binding at construction", async () => {
+  assert.throws(() => new DoOidcStore(undefined), /Durable Object namespace binding/);
 });

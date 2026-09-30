@@ -18,5 +18,12 @@
     { "binding": "LOGINS", "id": "<from `wrangler kv namespace create LOGINS`>" }
   ],
 
+  // Alternative to KV: a SQLite-backed Durable Object. Strongly consistent, atomic single-use, and
+  // nothing to provision — the object creates its own tables. Uncomment both blocks and the worker
+  // uses it automatically (and ignores LOGINS).
+  //
+  // "durable_objects": { "bindings": [{ "name": "QRAUTH_DO", "class_name": "QrAuthStorage" }] },
+  // "migrations": [{ "tag": "v1", "new_sqlite_classes": ["QrAuthStorage"] }],
+
   "observability": { "enabled": true }
 }
