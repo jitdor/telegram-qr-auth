@@ -761,6 +761,9 @@ function tokenError(error, description, status = 400) {
 
 function errorPage(error, description) {
   return new Response(renderErrorPage(error, description), {
+    // On this HTML path "temporarily_unavailable" only ever means the rate limiter said no, hence
+    // 429. The /token endpoint's 503 for the same code (refresh gate unreachable) is a different
+    // condition: the service could not answer, rather than the caller asking too often.
     status: error === "temporarily_unavailable" ? 429 : 400,
     headers: { "Content-Type": "text/html; charset=UTF-8", "Cache-Control": "no-store" },
   });

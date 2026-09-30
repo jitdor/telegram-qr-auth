@@ -135,12 +135,13 @@ export class MemoryOidcStore {
 
   async revokeConsent(userId, clientId) {
     this.consents.delete(consentKey(userId, clientId));
-    for (const [token, payload] of this.refreshTokens) {
-      // Withdrawing consent has to take the client's live access with it, or the button is a lie.
-      if (String(payload.userId) === String(userId) && payload.clientId === clientId) {
-        this.refreshTokens.delete(token);
-      }
+    // Withdrawing consent has to take the client's live access with it, or the button is a lie.
+    // Through revokeFamily, like the other stores, so the family is tombstoned too.
+    const families = new Set();
+    for (const payload of this.refreshTokens.values()) {
+      if (String(payload.userId) === String(userId) && payload.clientId === clientId) families.add(payload.familyId);
     }
+    for (const familyId of families) await this.revokeFamily(familyId);
   }
 }
 
