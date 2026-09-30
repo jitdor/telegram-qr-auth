@@ -84,11 +84,18 @@ Not on npm — install straight from GitHub:
 npm install github:jitdor/telegram-qr-auth
 ```
 
-Pin a tag for anything you deploy, since the default branch moves:
+This tracks `main`, which is the supported version — there are no release tags to pin. npm records
+the exact commit it fetched in your lockfile, so **commit `package-lock.json`**: installs stay
+reproducible, and you only move when you choose to:
 
 ```bash
-npm install github:jitdor/telegram-qr-auth#v0.3.1
+npm update telegram-qr-auth      # fetch the latest main and record the new commit
 ```
+
+**Knowing when there is an update.** There is no version number to watch. Follow the commit feed
+(`https://github.com/jitdor/telegram-qr-auth/commits/main.atom`) in a feed reader, or use
+GitHub's **Watch → Custom** on the repo. Changes that alter behaviour are called out in the commit
+message and the pull request title, so skim those before running `npm update`.
 
 It lands in `node_modules/telegram-qr-auth` and imports by that name either way. Vendoring the
 `src/` directory into your own repo is also a legitimate option: it is nine dependency-free ESM
