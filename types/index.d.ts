@@ -139,7 +139,14 @@ export interface Branding {
   expiredText?: string;
   deniedText?: string;
   retryText?: string;
+  /** Text of the "Open Telegram" button shown to touch devices. */
   mobileLinkText?: string;
+  /** Subtitle shown to touch devices instead of `subtitle`. */
+  mobileSubtitle?: string;
+  /** Hint under the QR on pointer devices. */
+  qrHintText?: string;
+  /** Tooltip and accessible name of the (always clickable) QR. */
+  qrLinkTitle?: string;
   accent?: string;
   gradientFrom?: string;
   gradientTo?: string;

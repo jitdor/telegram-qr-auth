@@ -308,6 +308,14 @@ branding: {
 }
 ```
 
+**The QR is always a link.** Clicking it opens the same `t.me` deep link the code encodes — on a
+computer that launches the installed Telegram client, which is often quicker than fetching a phone.
+It opens in a new tab so the sign-in page stays put and keeps polling. On touch devices, where
+scanning your own screen is impossible, the page leads with an "Open Telegram to sign in" button and
+its own subtitle. Text is customisable via `branding.mobileLinkText`, `mobileSubtitle`, `qrHintText`
+and `qrLinkTitle`. A custom `renderLoginPage` should keep this: wrap the QR in an `<a href={deepLink}
+target="_blank" rel="noopener noreferrer">`.
+
 Or replace the page entirely — `renderLoginPage({ token, deepLink, qrSvg, error, pollPath, redirectTo })`
 returns an HTML string. The only contract a replacement must keep is polling `pollPath` and
 understanding the five statuses in `POLL_STATUSES`:

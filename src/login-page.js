@@ -1,5 +1,9 @@
-// The default sign-in page: a QR, a status line, and a tap-through link for people already on
-// their phone. No framework, no bundler, no external requests — it is one self-contained HTML
+// The default sign-in page: a QR, a status line, and a way in for people who cannot scan.
+//
+// The QR is always a link to the same deep link it encodes. On a computer that opens the installed
+// Telegram client (often quicker than fetching a phone), and on a phone — where scanning a screen
+// you are holding is impossible — the page leads with an "Open Telegram" button instead. Both open
+// in a new tab so this page stays put and keeps polling; navigating away would end the sign-in. No framework, no bundler, no external requests — it is one self-contained HTML
 // string, which is what lets a consuming app be a single file with no build step.
 //
 // Replace it wholesale by passing `renderLoginPage` to createTelegramQrAuth; restyle it by passing
@@ -9,13 +13,16 @@
 export const DEFAULT_BRANDING = {
   title: "Sign in",
   heading: "Sign in with Telegram",
-  subtitle: "Scan this QR code with the Telegram app on your phone. No phone number, no code to type.",
+  subtitle: "Scan this QR code with the Telegram app on your phone, or click it to open Telegram on this computer. No phone number, no code to type.",
+  mobileSubtitle: "Tap the button to open Telegram and confirm. No phone number, no code to type.",
+  qrHintText: "Telegram installed on this computer? Click the code to open it.",
+  qrLinkTitle: "Open Telegram to sign in",
   waitingText: "Waiting for scan…",
   successText: "Signed in — loading…",
   expiredText: "This QR code expired.",
   deniedText: "Your Telegram account isn't allowed to sign in here.",
   retryText: "Get a new QR code",
-  mobileLinkText: "On this phone? Tap here to open Telegram instead",
+  mobileLinkText: "Open Telegram to sign in",
   accent: "#6366f1",
   gradientFrom: "#38bdf8",
   gradientTo: "#6366f1",
@@ -70,13 +77,26 @@ ${branding.headHtml}
     padding: 10px 12px; margin: 0 0 18px;
   }
   .tqa-qr { display: flex; justify-content: center; margin: 0 0 14px; }
+  .tqa-qr-link { display: block; border-radius: 8px; cursor: pointer; line-height: 0; }
+  .tqa-qr-link:focus-visible, .tqa-open:focus-visible { outline: 3px solid ${branding.accent}; outline-offset: 3px; }
   .tqa-qr svg { width: 220px; height: 220px; }
+  .tqa-hint { font-size: 12px; color: #94a3b8; margin: -4px 0 12px; line-height: 1.4; }
+  .tqa-open {
+    display: block; margin: 0 0 18px; padding: 14px 18px; border-radius: 10px; font-size: 16px;
+    font-weight: 600; text-decoration: none; background: ${branding.accent}; color: #fff;
+  }
+  [hidden] { display: none !important; }
+  /* Phones and tablets: scanning your own screen is impossible, so lead with the button. */
+  .tqa-touch-only { display: none; }
+  @media (hover: none) and (pointer: coarse) {
+    .tqa-touch-only { display: block; }
+    .tqa-pointer-only { display: none; }
+  }
   .tqa-status { font-size: 12px; color: #94a3b8; margin: 0 0 16px; min-height: 16px; }
   .tqa-retry {
     border: none; border-radius: 8px; padding: 10px 18px; font-size: 14px; font-weight: 600;
     background: ${branding.accent}; color: #fff; cursor: pointer;
   }
-  .tqa-link { font-size: 12px; color: ${branding.accent}; text-decoration: none; }
   .tqa-foot { margin: 16px 0 0; font-size: 11px; color: #cbd5e1; }
 </style>
 </head>
@@ -84,11 +104,13 @@ ${branding.headHtml}
   <main class="tqa-card">
     ${branding.logoHtml}
     <h1>${escapeHtml(branding.heading)}</h1>
-    <p class="tqa-sub">${escapeHtml(branding.subtitle)}</p>
+    <p class="tqa-sub tqa-pointer-only">${escapeHtml(branding.subtitle)}</p>
+    <p class="tqa-sub tqa-touch-only">${escapeHtml(branding.mobileSubtitle)}</p>
     ${errorHtml}
-    <div class="tqa-qr" id="tqa-qr">${qrSvg}</div>
+    <a class="tqa-open tqa-touch-only" id="tqa-open" href="${escapeHtml(deepLink)}" target="_blank" rel="noopener noreferrer">${escapeHtml(branding.mobileLinkText)}</a>
+    <div class="tqa-qr" id="tqa-qr"><a class="tqa-qr-link" href="${escapeHtml(deepLink)}" target="_blank" rel="noopener noreferrer" title="${escapeHtml(branding.qrLinkTitle)}" aria-label="${escapeHtml(branding.qrLinkTitle)}">${qrSvg}</a></div>
+    <p class="tqa-hint tqa-pointer-only" id="tqa-hint">${escapeHtml(branding.qrHintText)}</p>
     <p class="tqa-status" id="tqa-status">${escapeHtml(branding.waitingText)}</p>
-    <a class="tqa-link" href="${escapeHtml(deepLink)}">${escapeHtml(branding.mobileLinkText)}</a>
     ${branding.footerHtml ? `<p class="tqa-foot">${branding.footerHtml}</p>` : ""}
   </main>
 <script>
@@ -106,8 +128,17 @@ ${branding.headHtml}
   var qrEl = document.getElementById("tqa-qr");
   var stopped = false;
 
+  // Once the sign-in is over (expired, denied) the links would open a dead or refused token.
+  function hideOpenLinks() {
+    ["tqa-open", "tqa-hint"].forEach(function (id) {
+      var el = document.getElementById(id);
+      if (el) el.hidden = true;
+    });
+  }
+
   function showExpired() {
     stopped = true;
+    hideOpenLinks();
     statusEl.textContent = text.expired;
     // Replacing the QR with the button rather than leaving a dead QR on screen: a stale QR that
     // still looks scannable is the single most confusing state this page can be in.
@@ -137,6 +168,7 @@ ${branding.headHtml}
         if (status === "expired" || status === "invalid") { showExpired(); return; }
         if (status === "denied") {
           stopped = true;
+          hideOpenLinks();
           // data.reason is a machine code for logs and gates, not copy for a person to read.
           statusEl.textContent = text.denied;
           return;

@@ -89,3 +89,34 @@ test("timingSafeEqualHex compares by value", () => {
   assert.equal(timingSafeEqualHex("abc123", "abc12"), false);
   assert.equal(timingSafeEqualHex("", ""), true);
 });
+
+test("the QR is a link to the deep link it encodes, opening in a new tab so polling continues", () => {
+  const deepLink = "https://t.me/b?start=a_1";
+  const html = renderLoginPage({ token: "0".repeat(32), deepLink, qrSvg: "<svg></svg>", pollPath: "/auth/poll" });
+  const qr = html.match(/<div class="tqa-qr" id="tqa-qr">(.*?)<\/div>/s)[1];
+  assert.match(qr, new RegExp(`<a [^>]*href="${deepLink.replace(/[?.]/g, "\\$&")}"`));
+  assert.match(qr, /target="_blank"/);
+  assert.match(qr, /rel="noopener noreferrer"/);
+  assert.match(qr, /<svg><\/svg>/, "the QR image must sit inside the link");
+});
+
+test("touch devices get an Open Telegram button and their own subtitle; both are customisable", () => {
+  const html = renderLoginPage({
+    token: "0".repeat(32),
+    deepLink: "https://t.me/b?start=a_1",
+    qrSvg: "<svg></svg>",
+    pollPath: "/auth/poll",
+    branding: { mobileLinkText: "Ouvrir Telegram", mobileSubtitle: "Touchez le bouton", qrHintText: "Cliquez sur le code" },
+  });
+  assert.match(html, /<a class="tqa-open tqa-touch-only"[^>]*href="https:\/\/t\.me\/b\?start=a_1"[^>]*>Ouvrir Telegram<\/a>/);
+  assert.match(html, /tqa-touch-only">Touchez le bouton/);
+  assert.match(html, /tqa-pointer-only" id="tqa-hint">Cliquez sur le code/);
+  assert.match(html, /@media \(hover: none\) and \(pointer: coarse\)/);
+});
+
+test("the open-Telegram links are hidden once the sign-in expires or is denied", () => {
+  const html = renderLoginPage({ token: "0".repeat(32), deepLink: "https://t.me/b?start=a_1", qrSvg: "<svg></svg>", pollPath: "/auth/poll" });
+  assert.match(html, /function hideOpenLinks/);
+  assert.match(html, /function showExpired\(\) \{\s*stopped = true;\s*hideOpenLinks\(\);/);
+  assert.match(html, /status === "denied"\) \{\s*stopped = true;\s*hideOpenLinks\(\);/);
+});
