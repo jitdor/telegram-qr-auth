@@ -151,6 +151,10 @@ export interface Branding {
   mobileLinkText?: string;
   /** Subtitle shown to touch devices instead of `subtitle`. */
   mobileSubtitle?: string;
+  /** Divider between the button and the QR on touch devices. */
+  orScanText?: string;
+  /** Page background behind the card; `gradientFrom`/`gradientTo` tint two soft glows over it. */
+  background?: string;
   /** Hint under the QR on pointer devices. */
   qrHintText?: string;
   /** Tooltip and accessible name of the (always clickable) QR. */

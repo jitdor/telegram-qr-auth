@@ -329,7 +329,9 @@ branding: {
   title: "Acme — Sign in",
   heading: "📈 Acme Dashboard",
   subtitle: "Scan with Telegram. Nothing to type.",
-  accent: "#0ea5e9", gradientFrom: "#0ea5e9", gradientTo: "#6366f1",
+  accent: "#0ea5e9",                        // button, status dot, focus ring
+  background: "#0e1a2f",                    // page behind the card
+  gradientFrom: "#0ea5e9", gradientTo: "#6366f1",   // two soft glows over the background
   qrDark: "#0f172a", qrLight: "#ffffff",
   logoHtml: '<img src="data:image/svg+xml;base64,..." alt="" width="48">',
   botSuccessText: "✅ You're in — back to your browser.",

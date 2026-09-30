@@ -122,8 +122,8 @@ test("touch devices get an Open Telegram button and their own subtitle; both are
     pollPath: "/auth/poll",
     branding: { mobileLinkText: "Ouvrir Telegram", mobileSubtitle: "Touchez le bouton", qrHintText: "Cliquez sur le code" },
   });
-  assert.match(html, /<a class="tqa-open tqa-touch-only"[^>]*href="tg:\/\/resolve\?domain=b&amp;start=a_1"[^>]*>Ouvrir Telegram<\/a>/);
-  assert.match(html, /tqa-touch-only">Touchez le bouton/);
+  assert.match(html, /<a class="tqa-open tqa-touch-only"[^>]*href="tg:\/\/resolve\?domain=b&amp;start=a_1"[^>]*><svg[^]*?<span>Ouvrir Telegram<\/span><\/a>/);
+  assert.match(html, /tqa-touch-only" id="tqa-how">Touchez le bouton/);
   assert.match(html, /tqa-pointer-only" id="tqa-hint">Cliquez sur le code/);
   assert.match(html, /@media \(hover: none\) and \(pointer: coarse\)/);
 });
