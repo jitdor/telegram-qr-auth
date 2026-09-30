@@ -10,6 +10,22 @@ import { join, dirname } from "node:path";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
+/**
+ * D1 and Durable Object SQLite accept numbered placeholders (`?1`, reusable), and the stores rely
+ * on that. node:sqlite only learned to bind them reliably in later 22.x releases (22.13 throws
+ * "column index out of range"), so the doubles expand `?N` into plain `?` with the arguments
+ * repeated, which every version binds identically.
+ */
+export function expandNumbered(query, args) {
+  if (!/\?\d/.test(query)) return { sql: query, args };
+  const expanded = [];
+  const sql = query.replace(/\?(\d+)/g, (_, n) => {
+    expanded.push(args[Number(n) - 1]);
+    return "?";
+  });
+  return { sql, args: expanded };
+}
+
 export function makeFakeD1({ sql = "d1.sql" } = {}) {
   const sqlite = new DatabaseSync(":memory:");
   sqlite.exec(readFileSync(join(__dirname, "..", "migrations", sql), "utf8"));
@@ -17,9 +33,11 @@ export function makeFakeD1({ sql = "d1.sql" } = {}) {
   return {
     sqlite,
     prepare(query) {
-      const stmt = sqlite.prepare(query);
+      const stmt = sqlite.prepare(expandNumbered(query, []).sql);
       return {
-        bind(...args) {
+        bind(...bound) {
+          const { sql, args } = expandNumbered(query, bound);
+          const stmt = sqlite.prepare(sql);
           return {
             async all() {
               return { results: stmt.all(...args) };
@@ -107,3 +125,47 @@ export function cookieFrom(response, name) {
 
 export const ALICE = { id: 111, first_name: "Alice", last_name: "Ng", username: "alice" };
 export const MALLORY = { id: 999, first_name: "Mallory" };
+
+/**
+ * A Durable Object namespace double. It builds the *real* storage class (from defineQrAuthStorage)
+ * over real SQLite, and calls it the way RPC does: asynchronously, with arguments and results
+ * passed through structuredClone so anything that could not cross the wire fails here too.
+ */
+export function makeFakeDONamespace(defineStorage) {
+  class FakeDurableObject {
+    constructor(ctx, env) {
+      this.ctx = ctx;
+      this.env = env;
+    }
+  }
+  const StorageClass = defineStorage(FakeDurableObject);
+  const objects = new Map();
+
+  function makeSql() {
+    const sqlite = new DatabaseSync(":memory:");
+    return {
+      exec(query, ...args) {
+        const expanded = expandNumbered(query, args);
+        const rows = sqlite.prepare(expanded.sql).all(...expanded.args);
+        const isRead = /^\s*select/i.test(query);
+        const changes = isRead ? 0 : sqlite.prepare("SELECT changes() AS c").get().c;
+        return { toArray: () => rows, rowsWritten: changes };
+      },
+    };
+  }
+
+  return {
+    objects,
+    idFromName: (name) => name,
+    get(id) {
+      if (!objects.has(id)) objects.set(id, new StorageClass({ storage: { sql: makeSql() } }, {}));
+      const target = objects.get(id);
+      return new Proxy(
+        {},
+        {
+          get: (_, method) => async (...args) => structuredClone(await target[method](...structuredClone(args))),
+        }
+      );
+    },
+  };
+}

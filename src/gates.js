@@ -5,9 +5,10 @@
 // A gate is just:
 //     async (user, ctx) => boolean | { ok: boolean, reason?: string }
 // where ctx is { telegram, request, stage }. `stage` is "confirm" when the scan is being confirmed
-// by the bot, and "session" when an existing cookie is being re-checked on a page load — the same
-// gate runs at both points, so revocation takes effect on the next request rather than at cookie
-// expiry.
+// by the bot, "poll" when the browser redeems it, "session" when an existing cookie is being
+// re-checked on a page load, and "refresh" when the OIDC provider handles a refresh-token grant —
+// the same gate runs at every point, so revocation takes effect on the next request rather than at
+// cookie expiry.
 
 import { isChatMember, MEMBER_STATUSES } from "./telegram.js";
 

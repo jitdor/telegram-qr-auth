@@ -24,14 +24,16 @@ export const SCOPE_DESCRIPTIONS = {
  * @param {object} params.client       The registered client.
  * @param {string[]} params.scopes     Scopes being requested.
  * @param {object} params.session      The signed-in user's claims.
+ * @param {string} [params.redirectUri] The callback actually matched for this request — what the
+ * user is shown. Falls back to the client's first registered URI only if omitted.
  * @param {string} params.requestId    Opaque id of the paused authorization request.
  * @param {string} params.csrfToken    Must come back with the form.
  * @param {string} params.actionPath   Where the form posts.
  * @param {object} [params.branding]
  */
-export function renderConsentPage({ client, scopes, session, requestId, csrfToken, actionPath, branding = {} }) {
+export function renderConsentPage({ client, scopes, session, redirectUri, requestId, csrfToken, actionPath, branding = {} }) {
   const accent = branding.accent ?? "#6366f1";
-  const callbackHost = hostOf(client.redirect_uris[0]);
+  const callbackHost = hostOf(redirectUri ?? client.redirect_uris[0]);
 
   const scopeItems = scopes
     .map((scope) => {

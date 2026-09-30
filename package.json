@@ -44,13 +44,20 @@
       "default": "./src/index.js"
     },
     "./gates": "./src/gates.js",
-    "./stores": "./src/stores/index.js",
+    "./stores": {
+      "types": "./types/stores.d.ts",
+      "default": "./src/stores/index.js"
+    },
     "./qr": "./src/qr.js",
     "./session": "./src/session.js",
     "./bot": "./src/bot.js",
     "./migrations/d1.sql": "./migrations/d1.sql",
+    "./migrations/oidc-d1.sql": "./migrations/oidc-d1.sql",
     "./package.json": "./package.json",
-    "./oidc": "./src/oidc/index.js",
+    "./oidc": {
+      "types": "./types/oidc.d.ts",
+      "default": "./src/oidc/index.js"
+    },
     "./oidc/clients": "./src/oidc/clients.js",
     "./oidc/store": "./src/oidc/store.js"
   },
@@ -63,7 +70,7 @@
   ],
   "sideEffects": false,
   "engines": {
-    "node": ">=20"
+    "node": ">=22.13"
   },
   "scripts": {
     "test": "node --test tests/*.test.mjs"

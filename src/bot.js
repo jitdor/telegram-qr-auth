@@ -6,6 +6,15 @@
 // their own dispatcher should skip this and call `auth.handleStart()` from inside whatever
 // `/start` handler they already have — that path is fully supported and no less complete.
 
+import { hmacSha256, toHex, timingSafeEqualHex } from "./crypto.js";
+
+/** Constant-time string compare: MACs both sides under the secret so length cannot leak either. */
+async function safeEqual(candidate, secret) {
+  const key = new TextEncoder().encode(secret);
+  const [a, b] = await Promise.all([hmacSha256(key, candidate), hmacSha256(key, secret)]);
+  return timingSafeEqualHex(toHex(a), toHex(b));
+}
+
 /**
  * @param {object} auth   The object returned by createTelegramQrAuth.
  * @param {object} [options]
@@ -76,7 +85,7 @@ export function createWebhookHandler(auth, options = {}) {
 
   return async function handleRequest(request) {
     if (request.method !== "POST") return new Response("Method not allowed", { status: 405 });
-    if (secretToken && request.headers.get("X-Telegram-Bot-Api-Secret-Token") !== secretToken) {
+    if (secretToken && !(await safeEqual(request.headers.get("X-Telegram-Bot-Api-Secret-Token") ?? "", secretToken))) {
       return new Response("Forbidden", { status: 403 });
     }
 

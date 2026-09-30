@@ -7,7 +7,8 @@ import assert from "node:assert/strict";
 import { MemoryLoginStore } from "../src/stores/memory.js";
 import { D1LoginStore } from "../src/stores/d1.js";
 import { KVLoginStore } from "../src/stores/kv.js";
-import { makeFakeD1, makeFakeKV, ALICE } from "./helpers.mjs";
+import { DoLoginStore, defineQrAuthStorage } from "../src/stores/do.js";
+import { makeFakeD1, makeFakeKV, makeFakeDONamespace, ALICE } from "./helpers.mjs";
 
 const NS = "cockpit";
 const USER = { id: ALICE.id, first_name: "Alice", last_name: "Ng", username: "alice" };
@@ -16,6 +17,7 @@ const stores = [
   ["MemoryLoginStore", () => new MemoryLoginStore()],
   ["D1LoginStore", () => new D1LoginStore(makeFakeD1())],
   ["KVLoginStore", () => new KVLoginStore(makeFakeKV())],
+  ["DoLoginStore", () => new DoLoginStore(makeFakeDONamespace(defineQrAuthStorage))],
 ];
 
 function future(seconds = 600) {

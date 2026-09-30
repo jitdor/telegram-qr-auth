@@ -17,7 +17,7 @@ No phone number. No login code. No password. No form fields at all — the sign-
 ```
 
 Zero dependencies. One file per concern, no build step. Runs on Cloudflare Workers, Deno, Bun and
-Node 20+.
+Node 22.13+.
 
 ---
 
@@ -195,13 +195,15 @@ authorize: async (user) => {
 }
 ```
 
-**The gate runs three times**, and `ctx.stage` tells you which:
+**The gate runs at up to four points**, and `ctx.stage` tells you which (`"refresh"` applies only
+if you run the OIDC provider):
 
 | `stage`     | When                                    | Why it matters                                        |
 | ----------- | --------------------------------------- | ----------------------------------------------------- |
 | `"confirm"` | The bot receives the scan               | An unauthorized scan is refused *before* the token is spent |
 | `"poll"`    | The browser redeems the confirmed token | Closes the gap between scan and redemption            |
 | `"session"` | **Every** guarded request               | Access revoked in Telegram is revoked here immediately |
+| `"refresh"` | OIDC provider: a refresh-token grant    | Someone removed from the group cannot keep minting tokens |
 
 That last row is the important one: because the gate re-runs on every request, removing someone
 from the group locks them out on their next page load — not whenever their cookie happens to
@@ -232,13 +234,30 @@ nothing at all.)
 | ------------------ | ------------------------------ | --------------------------------------------------------- |
 | `KVLoginStore`     | `wrangler kv namespace create` | **The default.** No schema, no migration, TTL cleanup free |
 | `D1LoginStore`     | one table, one migration       | You want strictly atomic single-use, or already run D1     |
+| `DoLoginStore`     | one Durable Object class       | Atomic + consistent, with no database to provision         |
 | `MemoryLoginStore` | nothing                        | Both halves in one process, or tests                       |
 
 ```js
 new KVLoginStore(env.LOGINS, { prefix: "tgqr:" })
 new D1LoginStore(env.DB, { table: "telegram_qr_logins", sweepAfterSeconds: 86400 })
+new DoLoginStore(env.QRAUTH_DO, { name: "default" })
 new MemoryLoginStore()
 ```
+
+**Durable Object store.** Export the class from your Worker, bind it, and pass the binding:
+
+```js
+import { DurableObject } from "cloudflare:workers";
+import { defineQrAuthStorage, DoLoginStore } from "telegram-qr-auth";
+export class QrAuthStorage extends defineQrAuthStorage(DurableObject) {}
+// wrangler.jsonc: durable_objects.bindings [{ name: "QRAUTH_DO", class_name: "QrAuthStorage" }]
+//                 migrations [{ tag: "v1", new_sqlite_classes: ["QrAuthStorage"] }]
+```
+
+It is strongly consistent and `confirm` is atomic, like D1, but the object creates its own tables, so
+there is nothing to provision or migrate. For the OIDC provider use `DoOidcStore` from
+`telegram-qr-auth/oidc` — the same object can hold both. If the bot is a separate Worker, bind the
+class there with `script_name`, and use the same `name` on both sides.
 
 **The KV trade-off, stated honestly.** KV is eventually consistent, so a confirmation may take an
 extra poll cycle to become visible — invisible against a 2-second poll and a 10-minute TTL. And its
@@ -247,7 +266,7 @@ scans of the same QR could both succeed. Note what that costs: both scanners alr
 authorization gate, so the outcome is two sessions for two people each entitled to one — not an
 unauthorized session, and the token is still consumed on first redemption so it can't be replayed
 later. If you want one QR to mean exactly one session always, use `D1LoginStore` (its `confirm` is
-a single conditional `UPDATE`, atomic by construction) or write a Durable Object store.
+a single conditional `UPDATE`, atomic by construction) or `DoLoginStore`.
 
 D1 needs its table created once:
 
@@ -289,6 +308,14 @@ branding: {
 }
 ```
 
+**The QR is always a link.** Clicking it opens the same `t.me` deep link the code encodes — on a
+computer that launches the installed Telegram client, which is often quicker than fetching a phone.
+It opens in a new tab so the sign-in page stays put and keeps polling. On touch devices, where
+scanning your own screen is impossible, the page leads with an "Open Telegram to sign in" button and
+its own subtitle. Text is customisable via `branding.mobileLinkText`, `mobileSubtitle`, `qrHintText`
+and `qrLinkTitle`. A custom `renderLoginPage` should keep this: wrap the QR in an `<a href={deepLink}
+target="_blank" rel="noopener noreferrer">`.
+
 Or replace the page entirely — `renderLoginPage({ token, deepLink, qrSvg, error, pollPath, redirectTo })`
 returns an HTML string. The only contract a replacement must keep is polling `pollPath` and
 understanding the five statuses in `POLL_STATUSES`:
@@ -312,14 +339,14 @@ PKCE, consent, and refresh rotation with reuse detection. Relying parties integr
 OIDC library and never learn Telegram is involved.
 
 ```js
-import { createOidcProvider, loadSigningKeys, StaticClientRegistry, KvOidcStore } from "telegram-qr-auth/oidc";
+import { createOidcProvider, loadSigningKeys, StaticClientRegistry, D1OidcStore } from "telegram-qr-auth/oidc";
 
 const oidc = createOidcProvider({
   auth,                                        // your createTelegramQrAuth instance
   issuer: "https://auth.example.com",
   keys: await loadSigningKeys(env.OIDC_SIGNING_KEY),
   clients: new StaticClientRegistry([...]),
-  store: new KvOidcStore(env.OIDC),
+  store: new D1OidcStore(env.OIDC_DB),
 });
 
 export default { fetch: (request) => oidc.handle(request) };
@@ -340,7 +367,7 @@ Relying parties then point any OIDC library at
 Authorization code + PKCE only — implicit and hybrid are neither advertised nor implemented.
 
 **[docs/oidc.md](docs/oidc.md)** is the deployment guide, and it is worth reading before you point
-strangers at this: consent deliberately costs one tap, `KvOidcStore` has no compare-and-swap, rate
+strangers at this: consent deliberately costs one tap, `KvOidcStore` has no compare-and-swap (use `D1OidcStore`), rate
 limiting is yours to wire up, and running an IdP for other people's users carries obligations that
 no amount of test coverage addresses.
 
@@ -548,7 +575,7 @@ Built on WebCrypto, `fetch`, `Request`/`Response` and `btoa`/`atob` only.
 | Runtime            | Status                                                        |
 | ------------------ | ------------------------------------------------------------- |
 | Cloudflare Workers | Primary target — D1/KV stores included                        |
-| Node 20+           | Yes (`Request`/`Response` are global)                         |
+| Node 22.13+        | Yes (`Request`/`Response` are global)                         |
 | Deno, Bun          | Yes                                                           |
 | Browsers           | No, and never — this is server-side by construction           |
 

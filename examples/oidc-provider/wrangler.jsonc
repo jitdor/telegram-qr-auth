@@ -19,13 +19,22 @@
 
   "kv_namespaces": [
     // In-flight QR sign-ins.
-    { "binding": "LOGINS", "id": "<from `wrangler kv namespace create LOGINS`>" },
-    // Authorization requests, codes, refresh tokens, consent grants.
-    //
-    // KV has no compare-and-swap, so code redemption is a read-then-delete. Fine for first-party
-    // use; for third parties, swap this for D1 or a Durable Object — see docs/oidc.md.
-    { "binding": "OIDC", "id": "<from `wrangler kv namespace create OIDC`>" }
+    { "binding": "LOGINS", "id": "<from `wrangler kv namespace create LOGINS`>" }
   ],
+
+  "d1_databases": [
+    // Authorization requests, codes, refresh tokens, consent grants. D1 rather than KV: code
+    // redemption and refresh rotation are single conditional statements here, where KV can only
+    // read-then-write. Apply migrations/oidc-d1.sql once.
+    { "binding": "OIDC_DB", "database_name": "oidc", "database_id": "<from `wrangler d1 create oidc`>" }
+  ],
+
+  // Alternative to the KV + D1 pair above: one SQLite-backed Durable Object holding both the QR
+  // sign-in records and the provider state, with the same atomic guarantees as D1. Uncomment both
+  // blocks and remove the two storage sections above; the worker switches automatically.
+  //
+  // "durable_objects": { "bindings": [{ "name": "QRAUTH_DO", "class_name": "QrAuthStorage" }] },
+  // "migrations": [{ "tag": "v1", "new_sqlite_classes": ["QrAuthStorage"] }],
 
   "ratelimits": [
     { "name": "RATE_LIMITER", "namespace_id": "1001", "simple": { "limit": 60, "period": 60 } }
