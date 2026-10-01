@@ -256,6 +256,8 @@ export interface SessionClaims extends Record<string, unknown> {
   id: number;
   name: string;
   username?: string;
+  /** Unix seconds when the QR sign-in that minted this session completed. Absent on older cookies. */
+  iat?: number;
   exp: number;
 }
 

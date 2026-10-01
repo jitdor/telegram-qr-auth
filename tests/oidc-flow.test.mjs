@@ -531,6 +531,58 @@ test("prompt=login asks for a fresh sign-in once, then resumes instead of loopin
   assert.ok(new URL(resumed.headers.get("Location")).searchParams.get("code"));
 });
 
+test("a parked request opened in another browser does not treat its older session as a fresh sign-in", async () => {
+  // Two clocks so the test can order events across seconds; anchored at real time because the
+  // login store checks token expiry against the wall clock.
+  let authClock = Math.floor(Date.now() / 1000);
+  let oidcClock = authClock;
+  const { oidc, auth } = await setup({
+    now: () => oidcClock,
+    authOverrides: { ...distinctSessions, now: () => authClock },
+  });
+
+  // Browser B has had a session since before this flow began.
+  const otherBrowserCookie = await signIn(auth);
+
+  // Browser A starts a prompt=login flow, signed out, and the request is parked.
+  oidcClock += 60;
+  const page = await (await startFirstParty(oidc, { prompt: "login" })).text();
+  const resumeUrl = page.match(/"redirectTo":"([^"]+)"/)[1];
+
+  // The same request_id URL opened in browser B: its cookie differs from the one parked with
+  // (none), but it predates the request, so it is not the sign-in prompt=login asked for.
+  const hijack = await oidc.handle(makeRequest(ISSUER + resumeUrl, { cookie: otherBrowserCookie }));
+  assert.equal(hijack.status, 200, "still the sign-in page");
+  assert.match(await hijack.text(), /<svg/);
+
+  // A QR sign-in made after the request was parked does complete it.
+  authClock = oidcClock + 5;
+  const freshCookie = await signIn(auth);
+  const resumed = await oidc.handle(makeRequest(ISSUER + resumeUrl, { cookie: freshCookie }));
+  assert.equal(resumed.status, 302);
+  assert.ok(new URL(resumed.headers.get("Location")).searchParams.get("code"));
+});
+
+test("max_age with an older session from another browser asks for a fresh sign-in", async () => {
+  // Two clocks so the test can order events across seconds; anchored at real time because the
+  // login store checks token expiry against the wall clock.
+  let authClock = Math.floor(Date.now() / 1000);
+  let oidcClock = authClock;
+  const { oidc, auth } = await setup({
+    now: () => oidcClock,
+    authOverrides: { claims: () => ({ auth_time: authClock }), now: () => authClock },
+  });
+  const otherBrowserCookie = await signIn(auth);
+
+  oidcClock += 600;
+  const page = await (await startFirstParty(oidc, { max_age: "60" })).text();
+  const resumeUrl = page.match(/"redirectTo":"([^"]+)"/)[1];
+
+  const hijack = await oidc.handle(makeRequest(ISSUER + resumeUrl, { cookie: otherBrowserCookie }));
+  assert.equal(hijack.status, 200, "still the sign-in page");
+  assert.match(await hijack.text(), /<svg/);
+});
+
 test("max_age without auth_time still completes after a sign-in during the flow", async () => {
   const { oidc, auth } = await setup({ authOverrides: { claims: undefined } });
   const page = await (await startFirstParty(oidc, { max_age: "60" })).text();

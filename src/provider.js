@@ -306,6 +306,10 @@ export function createTelegramQrAuth(config) {
       name: displayName(user),
       username: user.username || undefined,
       ...(claims ? claims(user) : {}),
+      // When this sign-in happened, stamped by us and after `claims` so a hook cannot backdate or
+      // postdate it. The OIDC provider compares it against when a request was parked to tell a
+      // sign-in made during that flow from a session that already existed.
+      iat: now(),
     };
   }
 

@@ -218,10 +218,21 @@ export function createOidcProvider(config) {
     let session = await auth.getSession(request);
     const cookieMark = await sessionMark(request, requestId);
 
-    // Coming back from the QR with a different session cookie than the one we parked with means
-    // the user signed in during this flow, which is exactly what prompt=login and max_age asked
-    // for. Without this, the resumed request would demand a fresh login again, forever.
-    const signedInDuringFlow = Boolean(session && parked?.sessionMark !== undefined && parked.sessionMark !== cookieMark);
+    // A session minted by a QR sign-in after this request was parked is exactly what prompt=login
+    // and max_age asked for; without accepting it, the resumed request would demand a fresh login
+    // again, forever. A cookie that merely differs from the one we parked with proves nothing: the
+    // request_id URL opened in another browser carries that browser's older session. So the
+    // evidence is the session's own `iat`, which the base package stamps at sign-in and signs into
+    // the cookie, compared against when we parked. The cookie must also differ, which rules out
+    // the cookie we parked with when both land in the same second.
+    const signedInDuringFlow = Boolean(
+      session &&
+        parked?.sessionMark !== undefined &&
+        parked.sessionMark !== cookieMark &&
+        Number.isFinite(parked.createdAt) &&
+        Number.isFinite(session.iat) &&
+        session.iat >= parked.createdAt
+    );
 
     if (session && !signedInDuringFlow && (prompt.has("login") || exceedsMaxAge(session, params.max_age, now()))) {
       session = null; // re-authentication demanded by the client
